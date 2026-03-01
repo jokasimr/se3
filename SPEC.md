@@ -64,7 +64,7 @@ The implementation is a set of vectorized DuckDB scalar functions written in C++
 - **Quaternion rotation kernel:** Rotation uses the optimized `t = 2*cross(qv, v)` identity to avoid quaternion multiplication or matrix construction.
 - **No normalization/checks:** Unit quaternion and unit axis assumptions are enforced by API contract, not code.
 - **Nested struct layout:** Types are `STRUCT`s for SQL clarity; all field extraction is done once per vector and reused in tight loops.
-- **Left-apply composition:** `se3_left_apply_translate` uses `R^{-1}` for translation update, and `se3_left_apply_rotate` uses `q2 ⊗ q`.
+- **Single compose API**: `se3_compose` replaces earlier left-apply helpers and covers all combinations via overloading.
 
 ### Memory Layout and Vectorization Details
 
@@ -124,11 +124,10 @@ Notes:
 - **Quaternion rotation (unit assumption)**: No normalization or validation for performance and simplicity. This assumes callers provide unit quaternions and unit axes.
 - **Translate-then-rotate convention**: Chosen for consistency and simpler composition rules in the codebase. It requires `R^{-1}` during left-translation.
 - **Structured SQL types**: `STRUCT` types are used for API clarity even though they require field extraction. The overhead is negligible relative to the math kernels.
-- **Single compose API**: Instead of left-apply helpers, `se3_compose` provides all combinations via overloading.
 
 ## Outstanding Issues / Questions
 1. **Axis normalization**: Should `quat_from_axis_angle` normalize the axis to protect against accidental non-unit inputs, or remain strict for performance?
 2. **Quaternion normalization**: Should any function renormalize (or validate) quaternions to prevent drift in long composition chains?
-3. **Right-apply / composition functions**: Do we need `se3_right_apply_translate`, `se3_right_apply_rotate`, or full `se3_compose(WA, WB)`?
+3. **Right-apply convenience helpers**: Do we want explicit right-apply helper names, or is `se3_compose` sufficient?
 4. **Documentation of conventions**: The chosen convention is clear here; ensure all downstream docs and user examples remain consistent.
 5. **ccache config**: If we want to use `ccache` by default, we should set `CCACHE_TEMPDIR` to a writable location or document the required environment.
