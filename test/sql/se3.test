@@ -1,0 +1,1073 @@
+# name: test/sql/se3.test
+# description: test se3 extension
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require se3
+
+# quat_from_axis_angle produces unit quaternion for unit axis
+query I
+SELECT abs(qnorm2(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)) - 1.0) < 1e-12;
+----
+true
+
+# qconj flips vector part
+query IIII
+SELECT
+  (qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).w,
+  (qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).x,
+  (qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).y,
+  (qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).z;
+----
+1.0	-2.0	-3.0	-4.0
+
+# se3_identity leaves points unchanged
+query III
+SELECT
+  (se3_apply(se3_identity(), struct_pack(x:=1.0, y:=2.0, z:=3.0))).x,
+  (se3_apply(se3_identity(), struct_pack(x:=1.0, y:=2.0, z:=3.0))).y,
+  (se3_apply(se3_identity(), struct_pack(x:=1.0, y:=2.0, z:=3.0))).z;
+----
+1.0	2.0	3.0
+
+# se3_from_axis_angle with 90deg about +Z rotates +X to +Y
+query III
+SELECT
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# compose translate after W
+query III
+SELECT
+  (se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), se3_identity()),
+    struct_pack(x:=4.0, y:=5.0, z:=6.0)
+  )).x,
+  (se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), se3_identity()),
+    struct_pack(x:=4.0, y:=5.0, z:=6.0)
+  )).y,
+  (se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), se3_identity()),
+    struct_pack(x:=4.0, y:=5.0, z:=6.0)
+  )).z;
+----
+5.0	7.0	9.0
+
+# compose rotate after W
+query III
+SELECT
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), se3_identity()),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), se3_identity()),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), se3_identity()),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# null propagation: any NULL input yields NULL output
+query I
+SELECT se3_identity() IS NULL;
+----
+false
+
+query I
+SELECT se3_apply(NULL, struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(se3_identity(), NULL) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+  struct_pack(x:=NULL, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT qmul(NULL, struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), NULL) IS NULL;
+----
+true
+
+query I
+SELECT quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), NULL) IS NULL;
+----
+true
+
+query I
+SELECT quat_from_axis_angle(struct_pack(x:=NULL, y:=0.0, z:=0.0), pi()/2.0) IS NULL;
+----
+true
+
+# zero angle yields identity quaternion
+query IIII
+SELECT
+  (quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), 0.0)).w,
+  (quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), 0.0)).x,
+  (quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), 0.0)).y,
+  (quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), 0.0)).z;
+----
+1.0	0.0	0.0	0.0
+
+# qmul identity
+query IIII
+SELECT
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=0.0, x:=1.0, y:=2.0, z:=3.0))).w,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=0.0, x:=1.0, y:=2.0, z:=3.0))).x,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=0.0, x:=1.0, y:=2.0, z:=3.0))).y,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=0.0, x:=1.0, y:=2.0, z:=3.0))).z;
+----
+0.0	1.0	2.0	3.0
+
+# qmul with conjugate yields (norm2,0,0,0)
+query IIII
+SELECT
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0)))).w,
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0)))).x,
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0)))).y,
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), qconj(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0)))).z;
+----
+30.0	0.0	0.0	0.0
+
+# quat_from_axis_angle does not normalize axis (norm2 reflects axis length)
+query I
+SELECT qnorm2(quat_from_axis_angle(struct_pack(x:=2.0, y:=0.0, z:=0.0), pi())) = 4.0;
+----
+true
+
+# se3_make with identity rotation is pure translation
+query III
+SELECT
+  (se3_apply(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+               struct_pack(x:=4.0, y:=5.0, z:=6.0))).x,
+  (se3_apply(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+               struct_pack(x:=4.0, y:=5.0, z:=6.0))).y,
+  (se3_apply(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+               struct_pack(x:=4.0, y:=5.0, z:=6.0))).z;
+----
+5.0	7.0	9.0
+
+# translate then rotate: t=(1,0,0), R=90deg about z, p=(0,0,0) -> (0,1,0)
+query III
+SELECT
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# compose translate after W with rotation: t' = t + R^-1 t2
+query III
+SELECT
+  round((se3_apply(
+    se3_compose(
+      struct_pack(x:=1.0, y:=0.0, z:=0.0),
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_compose(
+      struct_pack(x:=1.0, y:=0.0, z:=0.0),
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_compose(
+      struct_pack(x:=1.0, y:=0.0, z:=0.0),
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+1.0	0.0	0.0
+
+# compose rotate after W with translation
+query III
+SELECT
+  round((se3_apply(
+    se3_compose(
+      quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0))
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_compose(
+      quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0))
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_compose(
+      quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0))
+    ),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# null propagation for constructors
+query I
+SELECT se3_make(NULL, struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), NULL) IS NULL;
+----
+true
+
+# constant vectors: constant W with varying points
+query II
+SELECT
+  (se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).x,
+  (se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).y
+FROM (VALUES (0.0, 0.0, 0.0), (1.0, 2.0, 3.0)) v(px, py, pz)
+ORDER BY px;
+----
+1.0	2.0
+2.0	4.0
+
+# constant vectors: constant axis, varying angle
+query I
+SELECT round((quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th)).w, 6)
+FROM (VALUES (0.0), (pi())) v(th)
+ORDER BY th;
+----
+1.0
+0.0
+
+# dictionary vectors via filter selection
+statement ok
+CREATE TEMP TABLE pts AS
+SELECT * FROM (VALUES
+  (1, 1.0, 1.0, 1.0),
+  (2, 2.0, 2.0, 2.0),
+  (3, 3.0, 3.0, 3.0),
+  (4, 4.0, 4.0, 4.0)
+) t(id, x, y, z);
+
+query III
+SELECT
+  id,
+  (se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=x, y:=y, z:=z)
+  )).x,
+  (se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=x, y:=y, z:=z)
+  )).y
+FROM pts
+WHERE id IN (1, 3)
+ORDER BY id;
+----
+1	2.0	3.0
+3	4.0	5.0
+
+# dictionary vectors with qmul: identity * q = q
+query IIII
+SELECT
+  id,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=w, x:=x, y:=y, z:=z))).w,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=w, x:=x, y:=y, z:=z))).x,
+  (qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), struct_pack(w:=w, x:=x, y:=y, z:=z))).y
+FROM (VALUES
+  (1, 1.0, 2.0, 3.0, 4.0),
+  (2, 0.0, 1.0, 2.0, 3.0)
+) q(id, w, x, y, z)
+WHERE id = 2
+ORDER BY id;
+----
+2	0.0	1.0	2.0
+
+# union all / limit: exercise constant-like paths
+query II
+SELECT
+  (se3_apply(se3_identity(), struct_pack(x:=x, y:=y, z:=z))).x,
+  (se3_apply(se3_identity(), struct_pack(x:=x, y:=y, z:=z))).y
+FROM (
+  SELECT 1.0 AS x, 2.0 AS y, 3.0 AS z
+  UNION ALL
+  SELECT 4.0, 5.0, 6.0
+  LIMIT 2
+) t;
+----
+1.0	2.0
+4.0	5.0
+
+# union all with constant transform and limit
+query I
+SELECT round((se3_apply(
+  se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()),
+  struct_pack(x:=x, y:=0.0, z:=0.0)
+)).x, 6)
+FROM (
+  SELECT 1.0 AS x
+  UNION ALL
+  SELECT 2.0
+  UNION ALL
+  SELECT 3.0
+  LIMIT 2
+) t
+ORDER BY x;
+----
+-1.0
+-2.0
+
+# randomized property tests (deterministic with seed)
+statement ok
+SELECT setseed(0.123);
+
+# qnorm2 for axis-angle with unit axis is 1
+query I
+WITH r AS (
+  SELECT (random()*2.0-1.0) * pi() AS th
+  FROM range(200)
+)
+SELECT bool_and(abs(qnorm2(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th)) - 1.0) < 1e-12)
+FROM r;
+----
+true
+
+# se3_compose(t2, identity) applied to p equals p + t2
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz,
+    (random()*2.0-1.0) AS tx,
+    (random()*2.0-1.0) AS ty,
+    (random()*2.0-1.0) AS tz
+  FROM range(200)
+)
+SELECT bool_and(
+  abs((se3_apply(
+        se3_compose(struct_pack(x:=tx, y:=ty, z:=tz), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).x - (px + tx)) < 1e-12
+  AND abs((se3_apply(
+        se3_compose(struct_pack(x:=tx, y:=ty, z:=tz), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).y - (py + ty)) < 1e-12
+  AND abs((se3_apply(
+        se3_compose(struct_pack(x:=tx, y:=ty, z:=tz), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).z - (pz + tz)) < 1e-12
+)
+FROM r;
+----
+true
+
+# se3_compose(q2, identity) applied to p equals rotation by q2
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz,
+    (random()*2.0-1.0) * pi() AS th
+  FROM range(200)
+)
+SELECT bool_and(
+  abs((se3_apply(
+        se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).x - (se3_apply(
+        se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), th),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).x) < 1e-12
+  AND abs((se3_apply(
+        se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).y - (se3_apply(
+        se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), th),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).y) < 1e-12
+  AND abs((se3_apply(
+        se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th), se3_identity()),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).z - (se3_apply(
+        se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), th),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).z) < 1e-12
+)
+FROM r;
+----
+true
+
+# randomized property: rotation preserves norm for arbitrary unit axis
+statement ok
+SELECT setseed(0.456);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz,
+    (random()*2.0-1.0) * pi() AS th
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz, th,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz, th
+  FROM n
+  WHERE an > 1e-9
+)
+SELECT bool_and(
+  abs(
+    (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).x * (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).x
+  + (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).y * (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).y
+  + (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).z * (se3_apply(
+      se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
+      struct_pack(x:=px, y:=py, z:=pz)
+    )).z
+  - (px*px + py*py + pz*pz)
+  ) < 1e-10
+)
+FROM u;
+----
+true
+
+# non-axis-aligned rotation: axis (1,1,1) normalized, 120deg cycles axes
+query III
+WITH axis AS (
+  SELECT
+    1.0/sqrt(3.0) AS ux,
+    1.0/sqrt(3.0) AS uy,
+    1.0/sqrt(3.0) AS uz
+)
+SELECT
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()/3.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()/3.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()/3.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).z, 6)
+FROM axis;
+----
+0.0	1.0	0.0
+
+# randomized property: applying q then qconj returns original vector (pure rotation)
+statement ok
+SELECT setseed(0.789);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz,
+    (random()*2.0-1.0) * pi() AS th
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz, th,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz, th
+  FROM n
+  WHERE an > 1e-9
+), q AS (
+  SELECT
+    quat_from_axis_angle(struct_pack(x:=ux, y:=uy, z:=uz), th) AS qv,
+    px, py, pz
+  FROM u
+)
+SELECT bool_and(
+  abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qv),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qconj(qv)),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).x - px) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qv),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qconj(qv)),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).y - py) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qv),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qconj(qv)),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).z - pz) < 1e-10
+)
+FROM q;
+----
+true
+
+# randomized property: rotation by 2pi around any axis returns original point
+statement ok
+SELECT setseed(0.2468);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz
+  FROM n
+  WHERE an > 1e-9
+)
+SELECT bool_and(
+  abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).x - px) < 1e-10
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).y - py) < 1e-10
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).z - pz) < 1e-10
+)
+FROM u;
+----
+true
+
+# randomized property: theta and theta+2pi rotations are equivalent
+statement ok
+SELECT setseed(0.13579);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz
+  FROM n
+  WHERE an > 1e-9
+), a AS (
+  SELECT
+    ux, uy, uz, px, py, pz,
+    1.0 AS th1,
+    1.0 + 2.0*pi() AS th2
+  FROM u
+)
+SELECT bool_and(
+  abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th1),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).x - (se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th2),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).x) < 1e-10
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th1),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).y - (se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th2),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).y) < 1e-10
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th1),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).z - (se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th2),
+    struct_pack(x:=px, y:=py, z:=pz)
+  )).z) < 1e-10
+)
+FROM a;
+----
+true
+
+# property: two rotations (1 rad) then (2pi-1 rad) around same axis return original point
+statement ok
+SELECT setseed(0.97531);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz
+  FROM n
+  WHERE an > 1e-9
+), q AS (
+  SELECT
+    quat_from_axis_angle(struct_pack(x:=ux, y:=uy, z:=uz), 1.0) AS q1,
+    quat_from_axis_angle(struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi() - 1.0) AS q2,
+    px, py, pz
+  FROM u
+)
+SELECT bool_and(
+  abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).x - px) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).y - py) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).z - pz) < 1e-10
+)
+FROM q;
+----
+true
+
+# property: combine rotations (q2 * q1) then apply to point equals sequential application
+statement ok
+SELECT setseed(0.97531);
+
+query I
+WITH r AS (
+  SELECT
+    (random()*2.0-1.0) AS ax,
+    (random()*2.0-1.0) AS ay,
+    (random()*2.0-1.0) AS az,
+    (random()*2.0-1.0) AS px,
+    (random()*2.0-1.0) AS py,
+    (random()*2.0-1.0) AS pz
+  FROM range(200)
+), n AS (
+  SELECT
+    ax, ay, az, px, py, pz,
+    sqrt(ax*ax + ay*ay + az*az) AS an
+  FROM r
+), u AS (
+  SELECT
+    ax/an AS ux,
+    ay/an AS uy,
+    az/an AS uz,
+    px, py, pz
+  FROM n
+  WHERE an > 1e-9
+), q AS (
+  SELECT
+    quat_from_axis_angle(struct_pack(x:=ux, y:=uy, z:=uz), 1.0) AS q1,
+    quat_from_axis_angle(struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi() - 1.0) AS q2,
+    px, py, pz
+  FROM u
+)
+SELECT bool_and(
+  abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qmul(q2, q1)),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).x - (se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).x) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qmul(q2, q1)),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).y - (se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).y) < 1e-10
+  AND abs((se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qmul(q2, q1)),
+        struct_pack(x:=px, y:=py, z:=pz)
+      )).z - (se3_apply(
+        se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
+        se3_apply(
+          se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q1),
+          struct_pack(x:=px, y:=py, z:=pz)
+        )
+      )).z) < 1e-10
+)
+FROM q;
+----
+true
+
+# se3_compose(vec3, vec3) adds translations
+query III
+SELECT
+  (se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).x,
+  (se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).y,
+  (se3_compose(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).z;
+----
+5.0	7.0	9.0
+
+# se3_compose(quat, quat) equals qmul
+query IIII
+SELECT
+  (se3_compose(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), struct_pack(w:=5.0, x:=6.0, y:=7.0, z:=8.0))).w,
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), struct_pack(w:=5.0, x:=6.0, y:=7.0, z:=8.0))).w,
+  (se3_compose(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), struct_pack(w:=5.0, x:=6.0, y:=7.0, z:=8.0))).x,
+  (qmul(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0), struct_pack(w:=5.0, x:=6.0, y:=7.0, z:=8.0))).x;
+----
+-60.0	-60.0	12.0	12.0
+
+# se3_compose(q, t): apply t then rotate (result equals {t, q})
+query III
+SELECT
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), struct_pack(x:=1.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), struct_pack(x:=1.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), struct_pack(x:=1.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# se3_compose(t, q): apply q then t (t' = R^-1 t)
+query III
+SELECT
+  round((se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+1.0	0.0	0.0
+
+# se3_compose(W2, W1) equals sequential application
+query I
+SELECT
+  round((se3_apply(
+    se3_compose(
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))
+    ),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    se3_apply(
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=1.0, y:=0.0, z:=0.0)
+    )
+  )).x, 6)
+  AND round((se3_apply(
+    se3_compose(
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))
+    ),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).y, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    se3_apply(
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=1.0, y:=0.0, z:=0.0)
+    )
+  )).y, 6)
+  AND round((se3_apply(
+    se3_compose(
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))
+    ),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).z, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    se3_apply(
+      se3_make(struct_pack(x:=0.0, y:=1.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=1.0, y:=0.0, z:=0.0)
+    )
+  )).z, 6);
+----
+true
+
+# se3_compose(W, q) equals apply q then W
+query I
+SELECT
+  round((se3_apply(
+    se3_compose(
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)
+    ),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+    se3_apply(
+      se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=1.0, y:=0.0, z:=0.0)
+    )
+  )).x, 6);
+----
+true
+
+# se3_compose(W, t) equals apply t then W
+query I
+SELECT
+  round((se3_apply(
+    se3_compose(
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+      struct_pack(x:=0.0, y:=2.0, z:=0.0)
+    ),
+    struct_pack(x:=1.0, y:=1.0, z:=1.0)
+  )).y, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=1.0, y:=3.0, z:=1.0)
+  )).y, 6);
+----
+true
+
+# se3_compose(t, W) equals apply W then t
+query I
+SELECT
+  round((se3_apply(
+    se3_compose(
+      struct_pack(x:=0.0, y:=2.0, z:=0.0),
+      se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0))
+    ),
+    struct_pack(x:=1.0, y:=1.0, z:=1.0)
+  )).y, 6) = round((se3_apply(
+    se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+    struct_pack(x:=1.0, y:=1.0, z:=1.0)
+  )).y + 2.0, 6);
+----
+true
+
+# null propagation for se3_compose overloads
+query I
+SELECT se3_compose(CAST(NULL AS STRUCT(t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), q STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))), se3_identity()) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(se3_identity(), CAST(NULL AS STRUCT(t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), q STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)))) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(x:=1.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0), CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+# se3_inv(vec3) negates translation
+query III
+SELECT
+  (se3_inv(struct_pack(x:=1.0, y:=-2.0, z:=3.0))).x,
+  (se3_inv(struct_pack(x:=1.0, y:=-2.0, z:=3.0))).y,
+  (se3_inv(struct_pack(x:=1.0, y:=-2.0, z:=3.0))).z;
+----
+-1.0	2.0	-3.0
+
+# se3_inv(quat) conjugates quaternion
+query IIII
+SELECT
+  (se3_inv(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).w,
+  (se3_inv(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).x,
+  (se3_inv(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).y,
+  (se3_inv(struct_pack(w:=1.0, x:=2.0, y:=3.0, z:=4.0))).z;
+----
+1.0	-2.0	-3.0	-4.0
+
+# se3_inv(W) is inverse: W_inv(W(p)) = p
+query I
+SELECT
+  round((se3_apply(
+    se3_inv(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))),
+    se3_apply(
+      se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=4.0, y:=5.0, z:=6.0)
+    )
+  )).x, 6) = 4.0
+  AND round((se3_apply(
+    se3_inv(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))),
+    se3_apply(
+      se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=4.0, y:=5.0, z:=6.0)
+    )
+  )).y, 6) = 5.0
+  AND round((se3_apply(
+    se3_inv(se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0))),
+    se3_apply(
+      se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)),
+      struct_pack(x:=4.0, y:=5.0, z:=6.0)
+    )
+  )).z, 6) = 6.0;
+----
+true
+
+# se3_inv null propagation
+query I
+SELECT se3_inv(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT se3_inv(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT se3_inv(CAST(NULL AS STRUCT(t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), q STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)))) IS NULL;
+----
+true
