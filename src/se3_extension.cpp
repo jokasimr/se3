@@ -600,6 +600,117 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
+// se3_apply(t, p) -> vec3   (p + t)
+static void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &t_v = input.data[0];
+	auto &p_v = input.data[1];
+	auto &t = StructVector::GetEntries(t_v);
+	auto &p = StructVector::GetEntries(p_v);
+
+	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, px_uf, py_uf, pz_uf;
+	UnifiedVectorFormat t_uf, p_uf;
+	t_v.ToUnifiedFormat(n, t_uf);
+	p_v.ToUnifiedFormat(n, p_uf);
+
+	t[0]->ToUnifiedFormat(n, tx_uf);
+	t[1]->ToUnifiedFormat(n, ty_uf);
+	t[2]->ToUnifiedFormat(n, tz_uf);
+	p[0]->ToUnifiedFormat(n, px_uf);
+	p[1]->ToUnifiedFormat(n, py_uf);
+	p[2]->ToUnifiedFormat(n, pz_uf);
+
+	auto *tx = (const double *)tx_uf.data;
+	auto *ty = (const double *)ty_uf.data;
+	auto *tz = (const double *)tz_uf.data;
+	auto *px = (const double *)px_uf.data;
+	auto *py = (const double *)py_uf.data;
+	auto *pz = (const double *)pz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = t_uf.validity.AllValid() && p_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
+	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && px_uf.validity.AllValid() &&
+	                       py_uf.validity.AllValid() && pz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(t_uf, i) || !RowIsValid(p_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
+			    !RowIsValid(tz_uf, i) || !RowIsValid(px_uf, i) || !RowIsValid(py_uf, i) || !RowIsValid(pz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		ox[i] = px[px_uf.sel->get_index(i)] + tx[tx_uf.sel->get_index(i)];
+		oy[i] = py[py_uf.sel->get_index(i)] + ty[ty_uf.sel->get_index(i)];
+		oz[i] = pz[pz_uf.sel->get_index(i)] + tz[tz_uf.sel->get_index(i)];
+	}
+}
+
+// se3_apply(q, p) -> vec3   (R_q(p))
+static void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &q_v = input.data[0];
+	auto &p_v = input.data[1];
+	auto &q = StructVector::GetEntries(q_v);
+	auto &p = StructVector::GetEntries(p_v);
+
+	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf, px_uf, py_uf, pz_uf;
+	UnifiedVectorFormat q_uf, p_uf;
+	q_v.ToUnifiedFormat(n, q_uf);
+	p_v.ToUnifiedFormat(n, p_uf);
+
+	q[0]->ToUnifiedFormat(n, qw_uf);
+	q[1]->ToUnifiedFormat(n, qx_uf);
+	q[2]->ToUnifiedFormat(n, qy_uf);
+	q[3]->ToUnifiedFormat(n, qz_uf);
+	p[0]->ToUnifiedFormat(n, px_uf);
+	p[1]->ToUnifiedFormat(n, py_uf);
+	p[2]->ToUnifiedFormat(n, pz_uf);
+
+	auto *qw = (const double *)qw_uf.data;
+	auto *qx = (const double *)qx_uf.data;
+	auto *qy = (const double *)qy_uf.data;
+	auto *qz = (const double *)qz_uf.data;
+	auto *px = (const double *)px_uf.data;
+	auto *py = (const double *)py_uf.data;
+	auto *pz = (const double *)pz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = q_uf.validity.AllValid() && p_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
+	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
+	                       px_uf.validity.AllValid() && py_uf.validity.AllValid() && pz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(q_uf, i) || !RowIsValid(p_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
+			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(px_uf, i) || !RowIsValid(py_uf, i) ||
+			    !RowIsValid(pz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		const idx_t iqw_i = qw_uf.sel->get_index(i);
+		const idx_t iqx_i = qx_uf.sel->get_index(i);
+		const idx_t iqy_i = qy_uf.sel->get_index(i);
+		const idx_t iqz_i = qz_uf.sel->get_index(i);
+		const idx_t ipx_i = px_uf.sel->get_index(i);
+		const idx_t ipy_i = py_uf.sel->get_index(i);
+		const idx_t ipz_i = pz_uf.sel->get_index(i);
+
+		QRotate(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], px[ipx_i], py[ipy_i], pz[ipz_i], ox[i], oy[i], oz[i]);
+	}
+}
+
 // se3_inv(t) -> t (negation)
 static void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
@@ -1499,6 +1610,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                       WType(), Se3FromAxisAngleFn));
 
 	loader.RegisterFunction(ScalarFunction("se3_apply", {WType(), Vec3Type()}, Vec3Type(), Se3ApplyFn));
+	loader.RegisterFunction(ScalarFunction("se3_apply", {Vec3Type(), Vec3Type()}, Vec3Type(), Se3ApplyTFn));
+	loader.RegisterFunction(ScalarFunction("se3_apply", {QuatType(), Vec3Type()}, Vec3Type(), Se3ApplyQFn));
 
 	// se3_inv overloads
 	loader.RegisterFunction(ScalarFunction("se3_inv", {Vec3Type()}, Vec3Type(), Se3InvTFn));

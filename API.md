@@ -87,7 +87,17 @@ SELECT se3_from_axis_angle(
 );
 ```
 
-### `se3_apply(W: W, p: vec3) -> vec3`
+### `se3_apply(x, p) -> vec3`
+Overloaded apply operator.
+
+Overloads:
+- `se3_apply(W: W, p: vec3) -> vec3`  
+  Apply full transform.
+- `se3_apply(t: vec3, p: vec3) -> vec3`  
+  Translate: `p + t`.
+- `se3_apply(q: quat, p: vec3) -> vec3`  
+  Rotate: `R_q(p)`.
+
 Applies the transform to a point.
 
 Example (rotate + translate):
@@ -98,6 +108,16 @@ SELECT se3_apply(
     struct_pack(x:=0.0, y:=0.0, z:=1.0),
     pi()/2.0
   ),
+  struct_pack(x:=1.0, y:=0.0, z:=0.0)
+);
+
+SELECT se3_apply(
+  struct_pack(x:=1.0, y:=2.0, z:=3.0),
+  struct_pack(x:=4.0, y:=5.0, z:=6.0)
+);
+
+SELECT se3_apply(
+  quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
   struct_pack(x:=1.0, y:=0.0, z:=0.0)
 );
 ```

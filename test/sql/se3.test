@@ -91,7 +91,22 @@ SELECT se3_identity() IS NULL;
 false
 
 query I
-SELECT se3_apply(NULL, struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+SELECT se3_apply(CAST(NULL AS STRUCT(
+    t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE),
+    q STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)
+  )), struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+SELECT se3_apply(struct_pack(
+  t:=struct_pack(x:=1.0, y:=2.0, z:=3.0),
+  q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+), CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+SELECT se3_apply(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+                 struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+SELECT se3_apply(struct_pack(x:=1.0, y:=2.0, z:=3.0),
+                 CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+SELECT se3_apply(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)),
+                 struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+SELECT se3_apply(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0),
+                 CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
 ----
 true
 
@@ -109,6 +124,71 @@ SELECT se3_apply(
 true
 
 query I
+SELECT se3_apply(
+  se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+  struct_pack(x:=1.0, y:=NULL, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  se3_make(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)),
+  struct_pack(x:=1.0, y:=2.0, z:=NULL)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  struct_pack(x:=1.0, y:=2.0, z:=NULL),
+  struct_pack(x:=1.0, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0),
+  struct_pack(x:=1.0, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  struct_pack(
+    t:=struct_pack(x:=NULL, y:=2.0, z:=3.0),
+    q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+  ),
+  struct_pack(x:=1.0, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  struct_pack(
+    t:=struct_pack(x:=1.0, y:=2.0, z:=3.0),
+    q:=struct_pack(w:=NULL, x:=0.0, y:=0.0, z:=0.0)
+  ),
+  struct_pack(x:=1.0, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(
+  struct_pack(
+    t:=CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+    q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+  ),
+  struct_pack(x:=1.0, y:=2.0, z:=3.0)
+) IS NULL;
+----
+true
+
+query I
 SELECT qmul(NULL, struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
 ----
 true
@@ -119,12 +199,34 @@ SELECT qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), NULL) IS NULL;
 true
 
 query I
+SELECT qmul(struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0),
+            struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT qmul(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0),
+            struct_pack(w:=1.0, x:=0.0, y:=NULL, z:=0.0)) IS NULL;
+----
+true
+
+query I
 SELECT quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), NULL) IS NULL;
 ----
 true
 
 query I
 SELECT quat_from_axis_angle(struct_pack(x:=NULL, y:=0.0, z:=0.0), pi()/2.0) IS NULL;
+----
+true
+
+query I
+SELECT quat_from_axis_angle(struct_pack(x:=1.0, y:=NULL, z:=0.0), pi()/2.0) IS NULL;
+----
+true
+
+query I
+SELECT quat_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=NULL), pi()/2.0) IS NULL;
 ----
 true
 
@@ -256,6 +358,18 @@ true
 
 query I
 SELECT se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0), NULL) IS NULL;
+----
+true
+
+query I
+SELECT se3_make(struct_pack(x:=1.0, y:=NULL, z:=0.0),
+                struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_make(struct_pack(x:=1.0, y:=0.0, z:=0.0),
+                struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0)) IS NULL;
 ----
 true
 
@@ -991,6 +1105,39 @@ SELECT se3_compose(se3_identity(), CAST(NULL AS STRUCT(t STRUCT(x DOUBLE, y DOUB
 true
 
 query I
+SELECT se3_compose(
+  struct_pack(
+    t:=struct_pack(x:=1.0, y:=NULL, z:=0.0),
+    q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+  ),
+  se3_identity()
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(
+  struct_pack(
+    t:=struct_pack(x:=1.0, y:=0.0, z:=0.0),
+    q:=struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0)
+  ),
+  se3_identity()
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(
+  struct_pack(
+    t:=CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+    q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+  ),
+  se3_identity()
+) IS NULL;
+----
+true
+
+query I
 SELECT se3_compose(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(x:=1.0, y:=0.0, z:=0.0)) IS NULL;
 ----
 true
@@ -1001,12 +1148,36 @@ SELECT se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0), CAST(NULL AS STRUCT(x DO
 true
 
 query I
+SELECT se3_compose(struct_pack(x:=1.0, y:=NULL, z:=0.0),
+                   struct_pack(x:=1.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(struct_pack(x:=1.0, y:=0.0, z:=0.0),
+                   struct_pack(x:=1.0, y:=NULL, z:=0.0)) IS NULL;
+----
+true
+
+query I
 SELECT se3_compose(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
 ----
 true
 
 query I
 SELECT se3_compose(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0), CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0),
+                   struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_compose(struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0),
+                   struct_pack(w:=1.0, x:=0.0, y:=NULL, z:=0.0)) IS NULL;
 ----
 true
 
@@ -1063,11 +1234,88 @@ SELECT se3_inv(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
 true
 
 query I
+SELECT se3_inv(struct_pack(x:=1.0, y:=NULL, z:=0.0)) IS NULL;
+----
+true
+
+query I
 SELECT se3_inv(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
 ----
 true
 
 query I
+SELECT se3_inv(struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0)) IS NULL;
+----
+true
+
+query I
 SELECT se3_inv(CAST(NULL AS STRUCT(t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), q STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)))) IS NULL;
+----
+true
+
+query I
+SELECT se3_inv(struct_pack(
+  t:=struct_pack(x:=1.0, y:=NULL, z:=0.0),
+  q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+)) IS NULL;
+----
+true
+
+query I
+SELECT se3_inv(struct_pack(
+  t:=struct_pack(x:=1.0, y:=0.0, z:=0.0),
+  q:=struct_pack(w:=1.0, x:=NULL, y:=0.0, z:=0.0)
+)) IS NULL;
+----
+true
+
+query I
+SELECT se3_inv(struct_pack(
+  t:=CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+  q:=struct_pack(w:=1.0, x:=0.0, y:=0.0, z:=0.0)
+)) IS NULL;
+----
+true
+
+# se3_apply(vec3, vec3): pure translation
+query III
+SELECT
+  (se3_apply(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).x,
+  (se3_apply(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).y,
+  (se3_apply(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=4.0, y:=5.0, z:=6.0))).z;
+----
+5.0	7.0	9.0
+
+# se3_apply(quat, vec3): pure rotation
+query III
+SELECT
+  round((se3_apply(
+    quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).x, 6),
+  round((se3_apply(
+    quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).y, 6),
+  round((se3_apply(
+    quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
+    struct_pack(x:=1.0, y:=0.0, z:=0.0)
+  )).z, 6);
+----
+0.0	1.0	0.0
+
+# se3_apply null propagation for vec3/quat overloads
+query I
+SELECT se3_apply(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(struct_pack(x:=1.0, y:=2.0, z:=3.0), CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT se3_apply(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
 ----
 true
