@@ -4,7 +4,7 @@ This repository is based on https://github.com/duckdb/extension-template, check 
 
 ---
 
-This extension, Se3, allow you to ... <extension_goal>.
+This extension, Se3, provides SE(3) rigid transformations using unit quaternions, implemented as vectorized DuckDB scalar functions.
 
 
 ## Building
@@ -30,16 +30,19 @@ The main binaries that will be built are:
 ## Running the extension
 To run the extension code, simply start the shell with `./build/release/duckdb`.
 
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `se3()` that takes a string arguments and returns a string:
+Now we can use the features from the extension directly in DuckDB. Example:
+```sql
+SELECT se3_apply(
+  se3_from_axis_angle(
+    struct_pack(x:=1.0, y:=0.0, z:=0.0),
+    struct_pack(x:=0.0, y:=0.0, z:=1.0),
+    pi()/2.0
+  ),
+  struct_pack(x:=1.0, y:=0.0, z:=0.0)
+);
 ```
-D select se3('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Se3 Jane 🐥 │
-└───────────────┘
-```
+
+For the full API and semantics, see `API.md` and `SPEC.md`.
 
 ## Running the tests
 ```sh
