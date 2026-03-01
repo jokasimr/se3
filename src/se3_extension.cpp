@@ -40,8 +40,7 @@ static inline bool RowIsValid(const UnifiedVectorFormat &uf, idx_t i) {
 }
 
 // ------------------------- Quaternion kernels -------------------------
-static inline void QMul(double aw, double ax, double ay, double az,
-                        double bw, double bx, double by, double bz,
+static inline void QMul(double aw, double ax, double ay, double az, double bw, double bx, double by, double bz,
                         double &rw, double &rx, double &ry, double &rz) {
 	rw = aw * bw - ax * bx - ay * by - az * bz;
 	rx = aw * bx + ax * bw + ay * bz - az * by;
@@ -49,9 +48,8 @@ static inline void QMul(double aw, double ax, double ay, double az,
 	rz = aw * bz + ax * by - ay * bx + az * bw;
 }
 
-static inline void QRotate(double qw, double qx, double qy, double qz,
-                           double vx, double vy, double vz,
-                           double &ox, double &oy, double &oz) {
+static inline void QRotate(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
+                           double &oy, double &oz) {
 	// t = 2*cross(qv, v)
 	const double tx1 = 2.0 * (qy * vz - qz * vy);
 	const double ty1 = 2.0 * (qz * vx - qx * vz);
@@ -66,9 +64,8 @@ static inline void QRotate(double qw, double qx, double qy, double qz,
 	oz = vz + qw * tz1 + cz;
 }
 
-static inline void QInvRotate(double qw, double qx, double qy, double qz,
-                              double vx, double vy, double vz,
-                              double &ox, double &oy, double &oz) {
+static inline void QInvRotate(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
+                              double &oy, double &oz) {
 	QRotate(qw, -qx, -qy, -qz, vx, vy, vz, ox, oy, oz);
 }
 
@@ -101,9 +98,8 @@ static inline void PrepareQuatOut(Vector &result, double *&ow, double *&ox, doub
 }
 
 // W result: STRUCT(t vec3, q quat)
-static inline void PrepareWOut(Vector &result,
-                               double *&tx, double *&ty, double *&tz,
-                               double *&qw, double *&qx, double *&qy, double *&qz) {
+static inline void PrepareWOut(Vector &result, double *&tx, double *&ty, double *&tz, double *&qw, double *&qx,
+                               double *&qy, double *&qz) {
 	PrepareStructChildrenFlat(result);
 	auto &went = StructVector::GetEntries(result);
 
@@ -163,8 +159,8 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
-			if (!RowIsValid(axis_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(th_uf, i)) {
+			if (!RowIsValid(axis_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
+			    !RowIsValid(th_uf, i)) {
 				out_validity.SetInvalid(i);
 				continue;
 			}
@@ -245,8 +241,8 @@ static void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
 		}
 		double rw, rx, ry, rz;
 		QMul(aw[aw_sel->get_index(i)], ax[ax_sel->get_index(i)], ay[ay_sel->get_index(i)], az[az_sel->get_index(i)],
-		     bw[bw_sel->get_index(i)], bx[bx_sel->get_index(i)], by[by_sel->get_index(i)], bz[bz_sel->get_index(i)],
-		     rw, rx, ry, rz);
+		     bw[bw_sel->get_index(i)], bx[bx_sel->get_index(i)], by[by_sel->get_index(i)], bz[bz_sel->get_index(i)], rw,
+		     rx, ry, rz);
 		ow[i] = rw;
 		ox[i] = rx;
 		oy[i] = ry;
@@ -282,9 +278,8 @@ static void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &out_validity = FlatVector::Validity(result);
 	out_validity.SetAllValid(n);
 
-	const bool all_valid =
-	    q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() &&
-	    z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
+	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -329,9 +324,8 @@ static void QNorm2Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &out_validity = FlatVector::Validity(result);
 	out_validity.SetAllValid(n);
 
-	const bool all_valid =
-	    q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() &&
-	    z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
+	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -421,8 +415,8 @@ static void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
 			if (!RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
-			    !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
-			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i)) {
+			    !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) ||
+			    !RowIsValid(qz_uf, i)) {
 				out_validity.SetInvalid(i);
 				continue;
 			}
@@ -517,9 +511,9 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
 	auto &w_v = input.data[0];
-	auto &went = StructVector::GetEntries(w_v);           // W: {t,q}
-	auto &tent = StructVector::GetEntries(*went[0]);      // t
-	auto &qent = StructVector::GetEntries(*went[1]);      // q
+	auto &went = StructVector::GetEntries(w_v);      // W: {t,q}
+	auto &tent = StructVector::GetEntries(*went[0]); // t
+	auto &qent = StructVector::GetEntries(*went[1]); // q
 	auto &p_v = input.data[1];
 	auto &pent = StructVector::GetEntries(p_v); // p
 
@@ -628,8 +622,8 @@ static void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &out_validity = FlatVector::Validity(result);
 	out_validity.SetAllValid(n);
 
-	const bool all_valid = t_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
-	                       tz_uf.validity.AllValid();
+	const bool all_valid =
+	    t_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -668,9 +662,8 @@ static void Se3InvQFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &out_validity = FlatVector::Validity(result);
 	out_validity.SetAllValid(n);
 
-	const bool all_valid =
-	    q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() &&
-	    z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
+	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -869,7 +862,8 @@ static void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) 
 		otz[i] = btz[btz_i] + rtz;
 
 		double rw, rx, ry, rz;
-		QMul(aqw[aqw_i], aqx[aqx_i], aqy[aqy_i], aqz[aqz_i], bqw[bqw_i], bqx[bqx_i], bqy[bqy_i], bqz[bqz_i], rw, rx, ry, rz);
+		QMul(aqw[aqw_i], aqx[aqx_i], aqy[aqy_i], aqz[aqz_i], bqw[bqw_i], bqx[bqx_i], bqy[bqy_i], bqz[bqz_i], rw, rx, ry,
+		     rz);
 		oqw[i] = rw;
 		oqx[i] = rx;
 		oqy[i] = ry;
@@ -1211,7 +1205,8 @@ static void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) 
 		otz[i] = rtz;
 
 		double rw, rx, ry, rz;
-		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], q2w[iq2w_i], q2x[iq2x_i], q2y[iq2y_i], q2z[iq2z_i], rw, rx, ry, rz);
+		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], q2w[iq2w_i], q2x[iq2x_i], q2y[iq2y_i], q2z[iq2z_i], rw, rx, ry,
+		     rz);
 		oqw[i] = rw;
 		oqx[i] = rx;
 		oqy[i] = ry;
@@ -1301,7 +1296,8 @@ static void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) 
 		otz[i] = tz[itz_i];
 
 		double rw, rx, ry, rz;
-		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], wqw[iwqw_i], wqx[iwqx_i], wqy[iwqy_i], wqz[iwqz_i], rw, rx, ry, rz);
+		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], wqw[iwqw_i], wqx[iwqx_i], wqy[iwqy_i], wqz[iwqz_i], rw, rx, ry,
+		     rz);
 		oqw[i] = rw;
 		oqx[i] = rx;
 		oqy[i] = ry;
@@ -1486,8 +1482,8 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 // ------------------------- Registration -------------------------
 static void LoadInternal(ExtensionLoader &loader) {
-	loader.RegisterFunction(ScalarFunction(
-	    "quat_from_axis_angle", {Vec3Type(), LogicalType::DOUBLE}, QuatType(), QuatFromAxisAngleFn));
+	loader.RegisterFunction(
+	    ScalarFunction("quat_from_axis_angle", {Vec3Type(), LogicalType::DOUBLE}, QuatType(), QuatFromAxisAngleFn));
 
 	loader.RegisterFunction(ScalarFunction("qmul", {QuatType(), QuatType()}, QuatType(), QMulFn));
 
@@ -1499,8 +1495,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	loader.RegisterFunction(ScalarFunction("se3_make", {Vec3Type(), QuatType()}, WType(), Se3MakeFn));
 
-	loader.RegisterFunction(ScalarFunction(
-	    "se3_from_axis_angle", {Vec3Type(), Vec3Type(), LogicalType::DOUBLE}, WType(), Se3FromAxisAngleFn));
+	loader.RegisterFunction(ScalarFunction("se3_from_axis_angle", {Vec3Type(), Vec3Type(), LogicalType::DOUBLE},
+	                                       WType(), Se3FromAxisAngleFn));
 
 	loader.RegisterFunction(ScalarFunction("se3_apply", {WType(), Vec3Type()}, Vec3Type(), Se3ApplyFn));
 
@@ -1544,5 +1540,4 @@ extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(se3, loader) {
 	duckdb::LoadInternal(loader);
 }
-
 }
