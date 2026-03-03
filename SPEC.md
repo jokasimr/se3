@@ -25,6 +25,8 @@ Translation is applied first, then rotation. Unit quaternions and unit axes are 
 - `se3_make(t: vec3, q: quat) -> W`
 - `se3_from_axis_angle(t: vec3, axis: vec3, th: DOUBLE) -> W`
 - `se3_apply(W: W, p: vec3) -> vec3`
+- `se3_apply(t: vec3, p: vec3) -> vec3`
+- `se3_apply(q: quat, p: vec3) -> vec3`
 - `se3_inv(x) -> x` (overloaded; inverse of vec3/quat/W)
 - `se3_compose(A, B) -> ...` (overloaded; apply `B` then `A`)
 
@@ -89,19 +91,16 @@ The implementation is a set of vectorized DuckDB scalar functions written in C++
 
 ### Null Behavior
 
-- **Current behavior:** The functions do **not** explicitly propagate nulls. They read input buffers via `UnifiedVectorFormat` but do not check validity masks. If any input row contains a NULL in any field, behavior is undefined (may read garbage or produce non-sensical outputs).
+- **Current behavior:** All scalar functions with inputs explicitly propagate NULLs. Kernels check validity masks from `UnifiedVectorFormat` for both parent `STRUCT` values and required child fields, then mark output rows invalid when any required input is NULL. `se3_identity()` has no inputs and always returns non-NULL rows.
 
-- **Implications:** This is acceptable only if the API contract guarantees non-NULL inputs for all fields. If NULLs are possible in production usage, we must add validity checks and set the output validity mask accordingly.
+- **Implications:** NULL handling is deterministic and aligns with SQL expectations in DuckDB for this extension's functions and overloads.
 
-- **Potential improvement path:** If needed, the implementation can be extended to:
-  - Inspect `uf.validity` for each input field.
-  - Combine validity across all required inputs.
-  - Mark the output row invalid (NULL) when any input is NULL.
-  - Short-circuit computations for NULL rows.
+- **Implementation detail:** The output validity mask is initialized as all valid and rows are invalidated only when needed, so non-NULL rows remain on the fast path.
 
 ### Numeric Behavior
 
-- **All math uses `double`.** There is no mixed precision.\n- **Unit assumptions:** No renormalization, so accuracy depends on input quaternions and axes being unit length.
+- **All math uses `double`.** There is no mixed precision.
+- **Unit assumptions:** No renormalization, so accuracy depends on input quaternions and axes being unit length.
 
 ## How It Was Built (Compilation)
 Recommended local build (Ninja):
