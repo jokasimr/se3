@@ -2756,12 +2756,11 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 // ------------------------- Registration -------------------------
 static void LoadInternal(ExtensionLoader &loader) {
 	// Generic vector constructors and arithmetic
+	loader.RegisterFunction(ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                                       Vec3Type(), Vec3CtorFn));
 	loader.RegisterFunction(
-	    ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, Vec3Type(), Vec3CtorFn));
-	loader.RegisterFunction(ScalarFunction("vvec",
-	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE,
-	                                        LogicalType::DOUBLE},
-	                                       QuatType(), Vec4CtorFn));
+	    ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                   QuatType(), Vec4CtorFn));
 
 	loader.RegisterFunction(ScalarFunction("vadd", {Vec3Type(), Vec3Type()}, Vec3Type(), VAddVec3Fn));
 	loader.RegisterFunction(ScalarFunction("vadd", {QuatType(), QuatType()}, QuatType(), VAddVec4Fn));
@@ -2786,7 +2785,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	loader.RegisterFunction(ScalarFunction("vcross", {Vec3Type(), Vec3Type()}, Vec3Type(), VCrossVec3Fn));
 
-	loader.RegisterFunction(ScalarFunction("vcos_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCosAngleVec3Fn));
+	loader.RegisterFunction(
+	    ScalarFunction("vcos_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCosAngleVec3Fn));
 	loader.RegisterFunction(
 	    ScalarFunction("vcos_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VCosAngleVec4Fn));
 
