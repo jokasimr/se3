@@ -1,132 +1,144 @@
-# SPEC: se3 DuckDB Extension (Quaternion SE(3))
+# SPEC: se3 DuckDB Extension
 
-## What Was Built
-A DuckDB extension named `se3` that implements rigid 3D transformations using unit quaternions and vectorized scalar functions. The API is intentionally small and uses structured types for SQL ergonomics:
+## Scope
+
+`se3` is a DuckDB extension that provides:
+- Quaternion utilities
+- SE(3) transform construction/application/composition
+- Generic vector math on 3D and 4D struct vectors
+
+All kernels are implemented as vectorized scalar functions over DuckDB `DataChunk`s.
+
+## Data Types
 
 - `vec3`: `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`
 - `quat`: `STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`
+- `vec4`: `STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)` (same layout as `quat`)
 - `W`: `STRUCT(t vec3, q quat)`
 
-**Convention (source of truth):**
+Note: `vec4` and `quat` are layout-compatible by design. This is convenient for overload resolution, but they are not semantically equivalent.
+
+## Core Convention
+
+The transform convention is:
 
 ```
 W(p) = R_q(p + t)
 ```
 
-Translation is applied first, then rotation. Unit quaternions and unit axes are assumed (no normalization in kernels).
+`t` is applied first, then rotation `q`.
 
-### Implemented Scalar Functions
+## Public API
+
+### Vector constructors
+
+- `vvec(x, y, z) -> vec3`
+- `vvec(w, x, y, z) -> vec4`
+
+### Vector arithmetic
+
+- `vadd(vec3, vec3) -> vec3`
+- `vadd(vec4, vec4) -> vec4`
+- `vsub(vec3, vec3) -> vec3`
+- `vsub(vec4, vec4) -> vec4`
+- `vscale(vec3, DOUBLE) -> vec3`
+- `vscale(vec4, DOUBLE) -> vec4`
+- `vdot(vec3, vec3) -> DOUBLE`
+- `vdot(vec4, vec4) -> DOUBLE`
+- `vnorm2(vec3) -> DOUBLE`
+- `vnorm2(vec4) -> DOUBLE`
+- `vnorm(vec3) -> DOUBLE`
+- `vnorm(vec4) -> DOUBLE`
+- `vnormalize(vec3) -> vec3`
+- `vnormalize(vec4) -> vec4`
+- `vcross(vec3, vec3) -> vec3`
+- `vcos_angle(vec3, vec3) -> DOUBLE`
+- `vcos_angle(vec4, vec4) -> DOUBLE`
+- `vangle(vec3, vec3) -> DOUBLE`
+- `vangle(vec4, vec4) -> DOUBLE`
+- `vproj(vec3, vec3) -> vec3`
+- `vproj(vec4, vec4) -> vec4`
+- `vrej(vec3, vec3) -> vec3`
+- `vrej(vec4, vec4) -> vec4`
+
+### Quaternion functions
+
 - `quat_from_axis_angle(axis: vec3, th: DOUBLE) -> quat`
 - `qmul(qA: quat, qB: quat) -> quat`
 - `qconj(q: quat) -> quat`
 - `qnorm2(q: quat) -> DOUBLE`
 
+### SE(3) functions
+
 - `se3_identity() -> W`
 - `se3_make(t: vec3, q: quat) -> W`
 - `se3_from_axis_angle(t: vec3, axis: vec3, th: DOUBLE) -> W`
-- `se3_apply(W: W, p: vec3) -> vec3`
-- `se3_apply(t: vec3, p: vec3) -> vec3`
-- `se3_apply(q: quat, p: vec3) -> vec3`
-- `se3_inv(x) -> x` (overloaded; inverse of vec3/quat/W)
-- `se3_compose(A, B) -> ...` (overloaded; apply `B` then `A`)
+- `se3_apply(W, vec3) -> vec3`
+- `se3_apply(vec3, vec3) -> vec3`
+- `se3_apply(quat, vec3) -> vec3`
+- `se3_inv(vec3) -> vec3`
+- `se3_inv(quat) -> quat`
+- `se3_inv(W) -> W`
+- `se3_compose(W, W) -> W`
+- `se3_compose(vec3, vec3) -> vec3`
+- `se3_compose(quat, quat) -> quat`
+- `se3_compose(quat, vec3) -> W`
+- `se3_compose(vec3, quat) -> W`
+- `se3_compose(W, quat) -> W`
+- `se3_compose(quat, W) -> W`
+- `se3_compose(W, vec3) -> W`
+- `se3_compose(vec3, W) -> W`
 
-### Composition Semantics
-`se3_compose(A, B)` returns an operator equivalent to applying `B` first, then `A`.
+## Composition Semantics
 
-Key formulas under the convention `W(p) = R_q(p + t)`:
+`se3_compose(A, B)` means apply `B` first, then `A`.
 
-- **W ∘ W**:  
-  `q = qA ⊗ qB`  
-  `t = tB + R_{qB}^{-1} tA`
-- **t ∘ W** (apply `W` then translation `t`):  
-  `q = qW`  
-  `t = tW + R_{qW}^{-1} t`
-- **W ∘ t** (apply translation `t` then `W`):  
-  `q = qW`  
-  `t = tW + t`
-- **q ∘ W** (apply `W` then rotation `q`):  
-  `q = q ⊗ qW`  
-  `t = tW`
-- **W ∘ q** (apply rotation `q` then `W`):  
-  `q = qW ⊗ q`  
-  `t = R_q^{-1} tW`
-- **q ∘ t** (apply translation `t` then rotation `q`):  
-  `q = q`  
-  `t = t`
-- **t ∘ q** (apply rotation `q` then translation `t`):  
-  `q = q`  
-  `t = R_q^{-1} t`
+Key formulas under `W(p) = R_q(p + t)`:
 
-## How It Was Built (Implementation)
-The implementation is a set of vectorized DuckDB scalar functions written in C++ and registered in the `se3` extension module. Key implementation choices:
+- `W_A ∘ W_B`:
+  - `q = q_A ⊗ q_B`
+  - `t = t_B + R_{q_B}^{-1} t_A`
+- `t2 ∘ t1`:
+  - `t = t1 + t2`
+- `q2 ∘ q1`:
+  - `q = q2 ⊗ q1`
 
-- **Vectorized kernels:** Each function operates on a `DataChunk` and processes all rows in tight loops.
-- **Unified access once:** Inputs are converted to `UnifiedVectorFormat` once per input vector and reused.
-- **Flat outputs:** Output structs are forced to `FLAT_VECTOR`, and child vectors are written directly to avoid per-row struct construction.
-- **Quaternion rotation kernel:** Rotation uses the optimized `t = 2*cross(qv, v)` identity to avoid quaternion multiplication or matrix construction.
-- **No normalization/checks:** Unit quaternion and unit axis assumptions are enforced by API contract, not code.
-- **Nested struct layout:** Types are `STRUCT`s for SQL clarity; all field extraction is done once per vector and reused in tight loops.
-- **Single compose API**: `se3_compose` replaces earlier left-apply helpers and covers all combinations via overloading.
+Mixed compose overloads are implemented to preserve this same ordering rule.
 
-### Memory Layout and Vectorization Details
+## Null and Numeric Behavior
 
-- **Struct storage in DuckDB:** A `STRUCT` vector in DuckDB is represented as a parent vector with child vectors for each field. For example, `vec3` is a `STRUCT` with three child `DOUBLE` vectors (`x`, `y`, `z`), and `W` is a `STRUCT` with two children (`t` and `q`), each of which is itself a `STRUCT`.
+### Nulls
 
-- **UnifiedVectorFormat usage:** Every input child vector is converted once to `UnifiedVectorFormat` via `ToUnifiedFormat(n, uf)`. This produces:
-  - `uf.data`: a pointer to the physical data buffer (or a constant/flat representation).
-  - `uf.sel`: a selection vector that maps logical row indices `[0..n)` to physical indices.
+- `se3_identity()` always returns non-`NULL`.
+- All other functions propagate `NULL` if any required input/field is `NULL`.
 
-  The code does **not** assume the inputs are flat; all accesses are through `sel->get_index(i)` to correctly handle dictionary/constant vectors or filtered selections.
+### Numeric semantics
 
-- **Selection vector handling:** For each input child vector, the implementation captures both the data pointer and its selection vector. In the tight loop, it resolves the physical index with `sel->get_index(i)` for each input, then reads the scalar. This preserves correctness with filtered chunks and non-flat inputs.
+- Math type is `double` throughout.
+- Vector math functions intentionally use regular floating-point semantics:
+  - No explicit zero-denominator checks in `vnormalize`, `vcos_angle`, `vangle`, `vproj`, `vrej`
+  - These can produce `NaN`/`Inf` for edge inputs
+  - `vcos_angle` is not clamped to `[-1, 1]`
 
-- **Output vectors are forced to flat:** Output vectors are explicitly set to `FLAT_VECTOR` and their child vectors are also forced to `FLAT_VECTOR`. The code then writes outputs directly into the child data buffers. This avoids:
-  - Per-row struct materialization
-  - Repeated type dispatch
-  - Additional selection vector indirection on output
+### Axis-angle normalization
 
-- **Memory locality considerations:** Output writes are contiguous in flat buffers, which is friendly for CPU caches. Input reads may be strided when selections are non-trivial; using `UnifiedVectorFormat` and direct index mapping ensures correctness while keeping the code branch-free in the hot loop.
+- `quat_from_axis_angle` and `se3_from_axis_angle` normalize the supplied axis internally.
+- If axis norm is zero, output is `NULL`.
+- Axis norm uses a robust nested `hypot` computation (`hypot(hypot(x, y), z)`) to reduce underflow/overflow issues for tiny/huge inputs.
 
-- **No intermediate allocations:** All kernels operate with stack locals and direct buffer writes. There are no per-row heap allocations or temporary `Value` objects.
+## Implementation Notes
 
-### Null Behavior
+- All kernels are vectorized and use `UnifiedVectorFormat`.
+- Output struct vectors are forced to `FLAT_VECTOR` and written directly into child buffers.
+- No per-row heap allocations or `Value` materialization in hot loops.
+- Quaternion rotation in `se3_apply` uses a cross-product form instead of matrix construction.
 
-- **Current behavior:** All scalar functions with inputs explicitly propagate NULLs. Kernels check validity masks from `UnifiedVectorFormat` for both parent `STRUCT` values and required child fields, then mark output rows invalid when any required input is NULL. `se3_identity()` has no inputs and always returns non-NULL rows.
+## Testing Status
 
-- **Implications:** NULL handling is deterministic and aligns with SQL expectations in DuckDB for this extension's functions and overloads.
-
-- **Implementation detail:** The output validity mask is initialized as all valid and rows are invalidated only when needed, so non-NULL rows remain on the fast path.
-
-### Numeric Behavior
-
-- **All math uses `double`.** There is no mixed precision.
-- **Unit assumptions:** No renormalization, so accuracy depends on input quaternions and axes being unit length.
-
-## How It Was Built (Compilation)
-Recommended local build (Ninja):
-
-```sh
-GEN=ninja make
-```
-
-Run tests:
-
-```sh
-make test
-```
-
-Notes:
-- This extension does not require VCPKG.
-- In this environment, `ccache` failed to write to `/run/user/1000/ccache-tmp`; building with `CCACHE_DISABLE=1` succeeds.
-
-## Trade-offs Made
-- **Quaternion rotation (unit assumption)**: No normalization or validation for performance and simplicity. This assumes callers provide unit quaternions and unit axes.
-- **Translate-then-rotate convention**: Chosen for consistency and simpler composition rules in the codebase. It requires `R^{-1}` during left-translation.
-- **Structured SQL types**: `STRUCT` types are used for API clarity even though they require field extraction. The overhead is negligible relative to the math kernels.
-
-## Outstanding Issues / Questions
-1. **Axis normalization**: Should `quat_from_axis_angle` normalize the axis to protect against accidental non-unit inputs, or remain strict for performance?
-2. **Quaternion normalization**: Should any function renormalize (or validate) quaternions to prevent drift in long composition chains?
-3. **Right-apply convenience helpers**: Do we want explicit right-apply helper names, or is `se3_compose` sufficient?
-4. **Documentation of conventions**: The chosen convention is clear here; ensure all downstream docs and user examples remain consistent.
-5. **ccache config**: If we want to use `ccache` by default, we should set `CCACHE_TEMPDIR` to a writable location or document the required environment.
+Primary coverage is in `test/sql/se3.test` (SQLLogicTest), including:
+- Base API behavior and overload coverage
+- Null propagation
+- Composition/inverse identities
+- Vector algebra identities
+- Floating-point edge cases (`NaN`/`Inf`)
+- Tiny/huge axis normalization for axis-angle constructors

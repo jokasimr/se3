@@ -260,9 +260,63 @@ SELECT
 ----
 30.0	0.0	0.0	0.0
 
-# quat_from_axis_angle does not normalize axis (norm2 reflects axis length)
+# quat_from_axis_angle normalizes axis
 query I
-SELECT qnorm2(quat_from_axis_angle(struct_pack(x:=2.0, y:=0.0, z:=0.0), pi())) = 4.0;
+SELECT abs(qnorm2(quat_from_axis_angle(struct_pack(x:=2.0, y:=0.0, z:=0.0), pi())) - 1.0) < 1e-12;
+----
+true
+
+# quat_from_axis_angle returns NULL for zero axis
+query I
+SELECT quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), pi()/2.0) IS NULL;
+----
+true
+
+# se3_from_axis_angle returns NULL for zero axis
+query I
+SELECT se3_from_axis_angle(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=0.0, y:=0.0, z:=0.0), pi()/2.0) IS NULL;
+----
+true
+
+# se3_from_axis_angle normalizes axis (scaled axis gives same transform)
+query I
+SELECT
+  abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=2.0, y:=0.0, z:=0.0), pi()),
+    struct_pack(x:=0.0, y:=1.0, z:=0.0)
+  )).x - 0.0) < 1e-12
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=2.0, y:=0.0, z:=0.0), pi()),
+    struct_pack(x:=0.0, y:=1.0, z:=0.0)
+  )).y + 1.0) < 1e-12
+  AND abs((se3_apply(
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=2.0, y:=0.0, z:=0.0), pi()),
+    struct_pack(x:=0.0, y:=1.0, z:=0.0)
+  )).z - 0.0) < 1e-12;
+----
+true
+
+# tiny non-zero axis should normalize (not NULL) and produce unit quaternion
+query I
+SELECT abs(qnorm2(quat_from_axis_angle(struct_pack(x:=1e-300, y:=0.0, z:=0.0), pi()/2.0)) - 1.0) < 1e-12;
+----
+true
+
+# huge axis should normalize robustly (not overflow to NaN)
+query I
+SELECT abs(qnorm2(quat_from_axis_angle(struct_pack(x:=1e308, y:=0.0, z:=0.0), pi()/2.0)) - 1.0) < 1e-12;
+----
+true
+
+# se3_from_axis_angle with tiny non-zero axis should be valid
+query I
+SELECT se3_from_axis_angle(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=1e-300, y:=0.0, z:=0.0), pi()/2.0) IS NOT NULL;
+----
+true
+
+# se3_from_axis_angle with huge axis should be valid
+query I
+SELECT se3_from_axis_angle(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=1e308, y:=0.0, z:=0.0), pi()/2.0) IS NOT NULL;
 ----
 true
 
@@ -1317,5 +1371,322 @@ true
 
 query I
 SELECT se3_apply(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)), struct_pack(x:=1.0, y:=2.0, z:=3.0)) IS NULL;
+----
+true
+
+# vec3 / vec4 constructors
+query III
+SELECT (vvec(1.0, 2.0, 3.0)).x, (vvec(1.0, 2.0, 3.0)).y, (vvec(1.0, 2.0, 3.0)).z;
+----
+1.0	2.0	3.0
+
+query IIII
+SELECT (vvec(1.0, 2.0, 3.0, 4.0)).w, (vvec(1.0, 2.0, 3.0, 4.0)).x, (vvec(1.0, 2.0, 3.0, 4.0)).y, (vvec(1.0, 2.0, 3.0, 4.0)).z;
+----
+1.0	2.0	3.0	4.0
+
+# vector arithmetic (vec3 and vec4)
+query III
+SELECT
+  (vadd(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0))).x,
+  (vadd(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0))).y,
+  (vadd(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0))).z;
+----
+5.0	7.0	9.0
+
+query IIII
+SELECT
+  (vsub(vvec(4.0, 3.0, 2.0, 1.0), vvec(1.0, 1.0, 1.0, 1.0))).w,
+  (vsub(vvec(4.0, 3.0, 2.0, 1.0), vvec(1.0, 1.0, 1.0, 1.0))).x,
+  (vsub(vvec(4.0, 3.0, 2.0, 1.0), vvec(1.0, 1.0, 1.0, 1.0))).y,
+  (vsub(vvec(4.0, 3.0, 2.0, 1.0), vvec(1.0, 1.0, 1.0, 1.0))).z;
+----
+3.0	2.0	1.0	0.0
+
+query III
+SELECT
+  (vscale(vvec(1.0, -2.0, 3.0), -2.0)).x,
+  (vscale(vvec(1.0, -2.0, 3.0), -2.0)).y,
+  (vscale(vvec(1.0, -2.0, 3.0), -2.0)).z;
+----
+-2.0	4.0	-6.0
+
+# dot/norm/normalize
+query II
+SELECT vdot(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)),
+       vdot(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0));
+----
+32.0	20.0
+
+query II
+SELECT vnorm2(vvec(1.0, 2.0, 2.0)),
+       vnorm(vvec(1.0, 2.0, 2.0, 1.0));
+----
+9.0	3.1622776601683795
+
+query I
+SELECT abs(vnorm(vnormalize(vvec(3.0, 4.0, 0.0))) - 1.0) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vnorm(vnormalize(vvec(1.0, 2.0, 2.0, 1.0))) - 1.0) < 1e-12;
+----
+true
+
+# cross / angle / projection / rejection
+query III
+SELECT
+  (vcross(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))).x,
+  (vcross(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))).y,
+  (vcross(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))).z;
+----
+0.0	0.0	1.0
+
+query II
+SELECT vcos_angle(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0)),
+       round(vangle(vvec(1.0, 0.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0, 0.0)), 12);
+----
+0.0	1.570796326795
+
+query I
+SELECT
+  abs((vproj(vvec(3.0, 4.0, 0.0), vvec(1.0, 0.0, 0.0))).x - 3.0) < 1e-12
+  AND abs((vproj(vvec(3.0, 4.0, 0.0), vvec(1.0, 0.0, 0.0))).y - 0.0) < 1e-12
+  AND abs((vrej(vvec(3.0, 4.0, 0.0), vvec(1.0, 0.0, 0.0))).x - 0.0) < 1e-12
+  AND abs((vrej(vvec(3.0, 4.0, 0.0), vvec(1.0, 0.0, 0.0))).y - 4.0) < 1e-12;
+----
+true
+
+# zero-denominator cases follow floating-point semantics (NaN/Inf), not NULL
+query I
+SELECT isnan((vnormalize(vvec(0.0, 0.0, 0.0))).x);
+----
+true
+
+query I
+SELECT isinf((vnormalize(vvec(1e-300, 0.0, 0.0))).x);
+----
+true
+
+query I
+SELECT (vnormalize(vvec(1e308, 0.0, 0.0))).x = 0.0;
+----
+true
+
+query I
+SELECT isnan((vnormalize(vvec(0.0, 0.0, 0.0, 0.0))).w);
+----
+true
+
+query I
+SELECT isnan(vcos_angle(vvec(0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0)));
+----
+true
+
+query I
+SELECT isnan((vproj(vvec(1.0, 2.0, 3.0), vvec(0.0, 0.0, 0.0))).x);
+----
+true
+
+# additional vector function coverage
+query I
+SELECT vvec(NULL, 2.0, 3.0) IS NULL;
+----
+true
+
+query I
+SELECT vvec(1.0, 2.0, NULL, 4.0) IS NULL;
+----
+true
+
+query I
+SELECT vadd(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)), vvec(1.0, 2.0, 3.0)) IS NULL;
+----
+true
+
+query I
+SELECT vsub(vvec(1.0, 2.0, 3.0, 4.0), CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
+----
+true
+
+query I
+SELECT vscale(vvec(1.0, 2.0, 3.0), NULL) IS NULL;
+----
+true
+
+query I
+SELECT vdot(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)) = vdot(vvec(4.0, 5.0, 6.0), vvec(1.0, 2.0, 3.0));
+----
+true
+
+query I
+SELECT abs(vnorm(vvec(1.0, 2.0, 2.0)) - sqrt(vnorm2(vvec(1.0, 2.0, 2.0)))) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vnorm(vvec(1.0, 2.0, 2.0, 1.0)) - sqrt(vnorm2(vvec(1.0, 2.0, 2.0, 1.0)))) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vcos_angle(vvec(2.0, 0.0, 0.0), vvec(5.0, 0.0, 0.0)) - 1.0) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vcos_angle(vvec(1.0, 2.0, 3.0, 4.0), vvec(2.0, 4.0, 6.0, 8.0)) - 1.0) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vangle(vvec(1.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0))) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vangle(vvec(1.0, 2.0, 3.0, 4.0), vvec(1.0, 2.0, 3.0, 4.0))) < 1e-12;
+----
+true
+
+query I
+SELECT
+  abs((vadd(vproj(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)),
+            vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)))).w - 1.0) < 1e-12
+  AND abs((vadd(vproj(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)),
+                vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)))).x - 2.0) < 1e-12
+  AND abs((vadd(vproj(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)),
+                vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)))).y - 3.0) < 1e-12
+  AND abs((vadd(vproj(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)),
+                vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)))).z - 4.0) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vdot(vrej(vvec(3.0, 4.0, 5.0), vvec(1.0, 2.0, 3.0)), vvec(1.0, 2.0, 3.0))) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vdot(vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(4.0, 3.0, 2.0, 1.0)), vvec(4.0, 3.0, 2.0, 1.0))) < 1e-12;
+----
+true
+
+query I
+SELECT
+  abs((vadd(vcross(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)),
+            vcross(vvec(4.0, 5.0, 6.0), vvec(1.0, 2.0, 3.0)))).x) < 1e-12
+  AND abs((vadd(vcross(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)),
+              vcross(vvec(4.0, 5.0, 6.0), vvec(1.0, 2.0, 3.0)))).y) < 1e-12
+  AND abs((vadd(vcross(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)),
+              vcross(vvec(4.0, 5.0, 6.0), vvec(1.0, 2.0, 3.0)))).z) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vdot(vcross(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)), vvec(1.0, 2.0, 3.0))) < 1e-12;
+----
+true
+
+query I
+SELECT abs(vdot(vcross(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0)), vvec(4.0, 5.0, 6.0))) < 1e-12;
+----
+true
+
+query I
+SELECT isnan(vangle(vvec(0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0)));
+----
+true
+
+query I
+SELECT isnan(vcos_angle(vvec(0.0, 0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)));
+----
+true
+
+query I
+SELECT isnan(vangle(vvec(0.0, 0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)));
+----
+true
+
+query I
+SELECT isnan((vproj(vvec(1.0, 2.0, 3.0, 4.0), vvec(0.0, 0.0, 0.0, 0.0))).w);
+----
+true
+
+query I
+SELECT isnan((vrej(vvec(1.0, 2.0, 3.0, 4.0), vvec(0.0, 0.0, 0.0, 0.0))).w);
+----
+true
+
+# invalid API usage should fail to bind
+statement error
+SELECT vvec(1.0, 2.0);
+----
+Binder Error
+
+statement error
+SELECT vvec(1.0, 2.0, 3.0, 4.0, 5.0);
+----
+Binder Error
+
+statement error
+SELECT vcross(vvec(1.0, 2.0, 3.0, 4.0), vvec(5.0, 6.0, 7.0, 8.0));
+----
+Binder Error
+
+statement error
+SELECT vadd(vvec(1.0, 2.0, 3.0), vvec(1.0, 2.0, 3.0, 4.0));
+----
+Binder Error
+
+statement error
+SELECT vscale(vvec(1.0, 2.0, 3.0), vvec(1.0, 2.0, 3.0));
+----
+Binder Error
+
+# se3_from_axis_angle null propagation coverage
+query I
+SELECT se3_from_axis_angle(
+  CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+  struct_pack(x:=1.0, y:=0.0, z:=0.0),
+  pi()/2.0
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_from_axis_angle(
+  struct_pack(x:=1.0, y:=2.0, z:=3.0),
+  CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)),
+  pi()/2.0
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_from_axis_angle(
+  struct_pack(x:=1.0, y:=2.0, z:=3.0),
+  struct_pack(x:=1.0, y:=0.0, z:=0.0),
+  NULL
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_from_axis_angle(
+  struct_pack(x:=NULL, y:=2.0, z:=3.0),
+  struct_pack(x:=1.0, y:=0.0, z:=0.0),
+  pi()/2.0
+) IS NULL;
+----
+true
+
+query I
+SELECT se3_from_axis_angle(
+  struct_pack(x:=1.0, y:=2.0, z:=3.0),
+  struct_pack(x:=NULL, y:=0.0, z:=0.0),
+  pi()/2.0
+) IS NULL;
 ----
 true

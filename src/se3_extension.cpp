@@ -125,6 +125,1150 @@ static inline void PrepareWOut(Vector &result, double *&tx, double *&ty, double 
 
 // ------------------------- Functions -------------------------
 
+// vvec(x,y,z) -> vec3
+static void Vec3CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	UnifiedVectorFormat x_uf, y_uf, z_uf;
+	input.data[0].ToUnifiedFormat(n, x_uf);
+	input.data[1].ToUnifiedFormat(n, y_uf);
+	input.data[2].ToUnifiedFormat(n, z_uf);
+
+	auto *x = (const double *)x_uf.data;
+	auto *y = (const double *)y_uf.data;
+	auto *z = (const double *)z_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		ox[i] = x[x_uf.sel->get_index(i)];
+		oy[i] = y[y_uf.sel->get_index(i)];
+		oz[i] = z[z_uf.sel->get_index(i)];
+	}
+}
+
+// vvec(w,x,y,z) -> vec4 (struct layout compatible with quat)
+static void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
+	input.data[0].ToUnifiedFormat(n, w_uf);
+	input.data[1].ToUnifiedFormat(n, x_uf);
+	input.data[2].ToUnifiedFormat(n, y_uf);
+	input.data[3].ToUnifiedFormat(n, z_uf);
+
+	auto *w = (const double *)w_uf.data;
+	auto *x = (const double *)x_uf.data;
+	auto *y = (const double *)y_uf.data;
+	auto *z = (const double *)z_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid =
+	    w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		ow[i] = w[w_uf.sel->get_index(i)];
+		ox[i] = x[x_uf.sel->get_index(i)];
+		oy[i] = y[y_uf.sel->get_index(i)];
+		oz[i] = z[z_uf.sel->get_index(i)];
+	}
+}
+
+// vadd(vec3, vec3) -> vec3
+static void VAddVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		ox[i] = ax[ax_uf.sel->get_index(i)] + bx[bx_uf.sel->get_index(i)];
+		oy[i] = ay[ay_uf.sel->get_index(i)] + by[by_uf.sel->get_index(i)];
+		oz[i] = az[az_uf.sel->get_index(i)] + bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vadd(vec4, vec4) -> vec4
+static void VAddVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		ow[i] = aw[aw_uf.sel->get_index(i)] + bw[bw_uf.sel->get_index(i)];
+		ox[i] = ax[ax_uf.sel->get_index(i)] + bx[bx_uf.sel->get_index(i)];
+		oy[i] = ay[ay_uf.sel->get_index(i)] + by[by_uf.sel->get_index(i)];
+		oz[i] = az[az_uf.sel->get_index(i)] + bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vsub(vec3, vec3) -> vec3
+static void VSubVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		ox[i] = ax[ax_uf.sel->get_index(i)] - bx[bx_uf.sel->get_index(i)];
+		oy[i] = ay[ay_uf.sel->get_index(i)] - by[by_uf.sel->get_index(i)];
+		oz[i] = az[az_uf.sel->get_index(i)] - bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vsub(vec4, vec4) -> vec4
+static void VSubVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		ow[i] = aw[aw_uf.sel->get_index(i)] - bw[bw_uf.sel->get_index(i)];
+		ox[i] = ax[ax_uf.sel->get_index(i)] - bx[bx_uf.sel->get_index(i)];
+		oy[i] = ay[ay_uf.sel->get_index(i)] - by[by_uf.sel->get_index(i)];
+		oz[i] = az[az_uf.sel->get_index(i)] - bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vscale(vec3, s) -> vec3
+static void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &s_v = input.data[1];
+
+	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf, s_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	s_v.ToUnifiedFormat(n, s_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *s = (const double *)s_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() &&
+	                       az_uf.validity.AllValid() && s_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
+			    !RowIsValid(s_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		const double sv = s[s_uf.sel->get_index(i)];
+		ox[i] = ax[ax_uf.sel->get_index(i)] * sv;
+		oy[i] = ay[ay_uf.sel->get_index(i)] * sv;
+		oz[i] = az[az_uf.sel->get_index(i)] * sv;
+	}
+}
+
+// vscale(vec4, s) -> vec4
+static void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &s_v = input.data[1];
+
+	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf, s_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	s_v.ToUnifiedFormat(n, s_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *s = (const double *)s_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && s_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(s_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		const double sv = s[s_uf.sel->get_index(i)];
+		ow[i] = aw[aw_uf.sel->get_index(i)] * sv;
+		ox[i] = ax[ax_uf.sel->get_index(i)] * sv;
+		oy[i] = ay[ay_uf.sel->get_index(i)] * sv;
+		oz[i] = az[az_uf.sel->get_index(i)] * sv;
+	}
+}
+
+// vdot(vec3, vec3) -> DOUBLE
+static void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		out[i] = ax[ax_uf.sel->get_index(i)] * bx[bx_uf.sel->get_index(i)] +
+		         ay[ay_uf.sel->get_index(i)] * by[by_uf.sel->get_index(i)] +
+		         az[az_uf.sel->get_index(i)] * bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vdot(vec4, vec4) -> DOUBLE
+static void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		out[i] = aw[aw_uf.sel->get_index(i)] * bw[bw_uf.sel->get_index(i)] +
+		         ax[ax_uf.sel->get_index(i)] * bx[bx_uf.sel->get_index(i)] +
+		         ay[ay_uf.sel->get_index(i)] * by[by_uf.sel->get_index(i)] +
+		         az[az_uf.sel->get_index(i)] * bz[bz_uf.sel->get_index(i)];
+	}
+}
+
+// vnorm2(vec3) -> DOUBLE
+static void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid =
+	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		out[i] = x * x + y * y + z * z;
+	}
+}
+
+// vnorm2(vec4) -> DOUBLE
+static void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+		const double w = aw[aw_uf.sel->get_index(i)];
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		out[i] = w * w + x * x + y * y + z * z;
+	}
+}
+
+// vnorm(vec3) -> DOUBLE
+static void VNormVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
+	VNorm2Vec3Fn(input, state, result);
+	const idx_t n = input.size();
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	for (idx_t i = 0; i < n; i++) {
+		if (!out_validity.RowIsValid(i)) {
+			continue;
+		}
+		out[i] = std::sqrt(out[i]);
+	}
+}
+
+// vnorm(vec4) -> DOUBLE
+static void VNormVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
+	VNorm2Vec4Fn(input, state, result);
+	const idx_t n = input.size();
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	for (idx_t i = 0; i < n; i++) {
+		if (!out_validity.RowIsValid(i)) {
+			continue;
+		}
+		out[i] = std::sqrt(out[i]);
+	}
+}
+
+// vnormalize(vec3) -> vec3
+static void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid =
+	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		const double n2 = x * x + y * y + z * z;
+		const double inv_n = 1.0 / std::sqrt(n2);
+		ox[i] = x * inv_n;
+		oy[i] = y * inv_n;
+		oz[i] = z * inv_n;
+	}
+}
+
+// vnormalize(vec4) -> vec4
+static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double w = aw[aw_uf.sel->get_index(i)];
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		const double n2 = w * w + x * x + y * y + z * z;
+		const double inv_n = 1.0 / std::sqrt(n2);
+		ow[i] = w * inv_n;
+		ox[i] = x * inv_n;
+		oy[i] = y * inv_n;
+		oz[i] = z * inv_n;
+	}
+}
+
+// vcross(vec3, vec3) -> vec3
+static void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+
+		ox[i] = ayv * bzv - azv * byv;
+		oy[i] = azv * bxv - axv * bzv;
+		oz[i] = axv * byv - ayv * bxv;
+	}
+}
+
+// vcos_angle(vec3, vec3) -> DOUBLE
+static void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+
+		const double dot = axv * bxv + ayv * byv + azv * bzv;
+		const double na2 = axv * axv + ayv * ayv + azv * azv;
+		const double nb2 = bxv * bxv + byv * byv + bzv * bzv;
+		const double denom = std::sqrt(na2 * nb2);
+
+		out[i] = dot / denom;
+	}
+}
+
+// vcos_angle(vec4, vec4) -> DOUBLE
+static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double awv = aw[aw_uf.sel->get_index(i)];
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bwv = bw[bw_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+
+		const double dot = awv * bwv + axv * bxv + ayv * byv + azv * bzv;
+		const double na2 = awv * awv + axv * axv + ayv * ayv + azv * azv;
+		const double nb2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
+		const double denom = std::sqrt(na2 * nb2);
+
+		out[i] = dot / denom;
+	}
+}
+
+// vangle(vec3, vec3) -> DOUBLE
+static void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
+	VCosAngleVec3Fn(input, state, result);
+	const idx_t n = input.size();
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	for (idx_t i = 0; i < n; i++) {
+		if (!out_validity.RowIsValid(i)) {
+			continue;
+		}
+		out[i] = std::acos(out[i]);
+	}
+}
+
+// vangle(vec4, vec4) -> DOUBLE
+static void VAngleVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
+	VCosAngleVec4Fn(input, state, result);
+	const idx_t n = input.size();
+	auto *out = FlatVector::GetData<double>(result);
+	auto &out_validity = FlatVector::Validity(result);
+	for (idx_t i = 0; i < n; i++) {
+		if (!out_validity.RowIsValid(i)) {
+			continue;
+		}
+		out[i] = std::acos(out[i]);
+	}
+}
+
+// vproj(vec3, vec3) -> vec3
+static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+		const double bn2 = bxv * bxv + byv * byv + bzv * bzv;
+		const double s = (axv * bxv + ayv * byv + azv * bzv) / bn2;
+		ox[i] = bxv * s;
+		oy[i] = byv * s;
+		oz[i] = bzv * s;
+	}
+}
+
+// vproj(vec4, vec4) -> vec4
+static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double awv = aw[aw_uf.sel->get_index(i)];
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bwv = bw[bw_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+		const double bn2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
+		const double s = (awv * bwv + axv * bxv + ayv * byv + azv * bzv) / bn2;
+		ow[i] = bwv * s;
+		ox[i] = bxv * s;
+		oy[i] = byv * s;
+		oz[i] = bzv * s;
+	}
+}
+
+// vrej(vec3, vec3) -> vec3
+static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bx_uf);
+	b[1]->ToUnifiedFormat(n, by_uf);
+	b[2]->ToUnifiedFormat(n, bz_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
+	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+		const double bn2 = bxv * bxv + byv * byv + bzv * bzv;
+		const double s = (axv * bxv + ayv * byv + azv * bzv) / bn2;
+		ox[i] = axv - bxv * s;
+		oy[i] = ayv - byv * s;
+		oz[i] = azv - bzv * s;
+	}
+}
+
+// vrej(vec4, vec4) -> vec4
+static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &b_v = input.data[1];
+	auto &a = StructVector::GetEntries(a_v);
+	auto &b = StructVector::GetEntries(b_v);
+
+	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	b_v.ToUnifiedFormat(n, b_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+	b[0]->ToUnifiedFormat(n, bw_uf);
+	b[1]->ToUnifiedFormat(n, bx_uf);
+	b[2]->ToUnifiedFormat(n, by_uf);
+	b[3]->ToUnifiedFormat(n, bz_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+	auto *bw = (const double *)bw_uf.data;
+	auto *bx = (const double *)bx_uf.data;
+	auto *by = (const double *)by_uf.data;
+	auto *bz = (const double *)bz_uf.data;
+
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, ow, ox, oy, oz);
+	auto &out_validity = FlatVector::Validity(result);
+	out_validity.SetAllValid(n);
+
+	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
+	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
+	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
+	                       bz_uf.validity.AllValid();
+
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
+			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
+			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
+		}
+
+		const double awv = aw[aw_uf.sel->get_index(i)];
+		const double axv = ax[ax_uf.sel->get_index(i)];
+		const double ayv = ay[ay_uf.sel->get_index(i)];
+		const double azv = az[az_uf.sel->get_index(i)];
+		const double bwv = bw[bw_uf.sel->get_index(i)];
+		const double bxv = bx[bx_uf.sel->get_index(i)];
+		const double byv = by[by_uf.sel->get_index(i)];
+		const double bzv = bz[bz_uf.sel->get_index(i)];
+		const double bn2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
+		const double s = (awv * bwv + axv * bxv + ayv * byv + azv * bzv) / bn2;
+		ow[i] = awv - bwv * s;
+		ox[i] = axv - bxv * s;
+		oy[i] = ayv - byv * s;
+		oz[i] = azv - bzv * s;
+	}
+}
+
 // quat_from_axis_angle(axis:vec3, th:DOUBLE) -> quat
 static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
@@ -166,14 +1310,23 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 			}
 		}
 		const double thv = th[th_sel->get_index(i)];
+		const double axv = ax[ax_sel->get_index(i)];
+		const double ayv = ay[ay_sel->get_index(i)];
+		const double azv = az[az_sel->get_index(i)];
+		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
+		if (axis_n == 0.0) {
+			out_validity.SetInvalid(i);
+			continue;
+		}
+		const double inv_axis_n = 1.0 / axis_n;
 		const double h = 0.5 * thv;
 		const double c = std::cos(h);
 		const double s = std::sin(h);
 
 		ow[i] = c;
-		ox[i] = ax[ax_sel->get_index(i)] * s;
-		oy[i] = ay[ay_sel->get_index(i)] * s;
-		oz[i] = az[az_sel->get_index(i)] * s;
+		ox[i] = (axv * inv_axis_n) * s;
+		oy[i] = (ayv * inv_axis_n) * s;
+		oz[i] = (azv * inv_axis_n) * s;
 	}
 }
 
@@ -491,6 +1644,15 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 			}
 		}
 		const double thv = th[th_sel->get_index(i)];
+		const double axv = ax[ax_sel->get_index(i)];
+		const double ayv = ay[ay_sel->get_index(i)];
+		const double azv = az[az_sel->get_index(i)];
+		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
+		if (axis_n == 0.0) {
+			out_validity.SetInvalid(i);
+			continue;
+		}
+		const double inv_axis_n = 1.0 / axis_n;
 		const double h = 0.5 * thv;
 		const double c = std::cos(h);
 		const double s = std::sin(h);
@@ -500,9 +1662,9 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 		otz[i] = itz[itz_sel->get_index(i)];
 
 		oqw[i] = c;
-		oqx[i] = ax[ax_sel->get_index(i)] * s;
-		oqy[i] = ay[ay_sel->get_index(i)] * s;
-		oqz[i] = az[az_sel->get_index(i)] * s;
+		oqx[i] = (axv * inv_axis_n) * s;
+		oqy[i] = (ayv * inv_axis_n) * s;
+		oqz[i] = (azv * inv_axis_n) * s;
 	}
 }
 
@@ -1593,6 +2755,50 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 // ------------------------- Registration -------------------------
 static void LoadInternal(ExtensionLoader &loader) {
+	// Generic vector constructors and arithmetic
+	loader.RegisterFunction(
+	    ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, Vec3Type(), Vec3CtorFn));
+	loader.RegisterFunction(ScalarFunction("vvec",
+	                                       {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE,
+	                                        LogicalType::DOUBLE},
+	                                       QuatType(), Vec4CtorFn));
+
+	loader.RegisterFunction(ScalarFunction("vadd", {Vec3Type(), Vec3Type()}, Vec3Type(), VAddVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vadd", {QuatType(), QuatType()}, QuatType(), VAddVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vsub", {Vec3Type(), Vec3Type()}, Vec3Type(), VSubVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vsub", {QuatType(), QuatType()}, QuatType(), VSubVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vscale", {Vec3Type(), LogicalType::DOUBLE}, Vec3Type(), VScaleVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vscale", {QuatType(), LogicalType::DOUBLE}, QuatType(), VScaleVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vdot", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VDotVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vdot", {QuatType(), QuatType()}, LogicalType::DOUBLE, VDotVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vnorm2", {Vec3Type()}, LogicalType::DOUBLE, VNorm2Vec3Fn));
+	loader.RegisterFunction(ScalarFunction("vnorm2", {QuatType()}, LogicalType::DOUBLE, VNorm2Vec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vnorm", {Vec3Type()}, LogicalType::DOUBLE, VNormVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vnorm", {QuatType()}, LogicalType::DOUBLE, VNormVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vnormalize", {Vec3Type()}, Vec3Type(), VNormalizeVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vnormalize", {QuatType()}, QuatType(), VNormalizeVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vcross", {Vec3Type(), Vec3Type()}, Vec3Type(), VCrossVec3Fn));
+
+	loader.RegisterFunction(ScalarFunction("vcos_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCosAngleVec3Fn));
+	loader.RegisterFunction(
+	    ScalarFunction("vcos_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VCosAngleVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vangle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VAngleVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vangle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VAngleVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vproj", {Vec3Type(), Vec3Type()}, Vec3Type(), VProjVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vproj", {QuatType(), QuatType()}, QuatType(), VProjVec4Fn));
+
+	loader.RegisterFunction(ScalarFunction("vrej", {Vec3Type(), Vec3Type()}, Vec3Type(), VRejVec3Fn));
+	loader.RegisterFunction(ScalarFunction("vrej", {QuatType(), QuatType()}, QuatType(), VRejVec4Fn));
+
 	loader.RegisterFunction(
 	    ScalarFunction("quat_from_axis_angle", {Vec3Type(), LogicalType::DOUBLE}, QuatType(), QuatFromAxisAngleFn));
 

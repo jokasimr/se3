@@ -6,7 +6,10 @@ This document is the source of truth for the extension API.
 
 - `vec3`: `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`
 - `quat`: `STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`
+- `vec4`: `STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)` (same physical layout as `quat`)
 - `W`: `STRUCT(t vec3, q quat)`
+
+`vec4` and `quat` intentionally share the same structure, so DuckDB can accept either where that shape is expected. This is for convenience, not semantic equivalence: use vector functions for vectors and quaternion functions for rotations.
 
 ## Convention
 
@@ -14,12 +17,113 @@ This document is the source of truth for the extension API.
 W(p) = R_q(p + t)
 ```
 
-A point is translated by `t` first, then rotated by quaternion `q`. Quaternions and axes are assumed to be unit length; no normalization is performed.
+A point is translated by `t` first, then rotated by quaternion `q`. Quaternions are assumed to be unit length. Axis-angle constructors normalize the supplied axis; if the axis norm is zero they return `NULL`.
+
+## Behavioral Notes
+
+- Except for `se3_identity()`, all functions propagate `NULL` if any required input or required struct field is `NULL`.
+- Vector math functions intentionally follow regular floating-point semantics and do not add explicit zero-denominator guards.
+- `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
 
 ## Functions
 
+### `vvec(...) -> ...`
+Overloaded vector constructor.
+
+Overloads:
+- `vvec(x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec3`
+- `vvec(w: DOUBLE, x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec4`
+
+Constructs either a `vec3` (`STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`) or a 4D vector
+(`STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`, same layout as `quat`).
+
+### `vadd(a, b) -> a`
+Overloaded element-wise addition.
+
+Overloads:
+- `vadd(a: vec3, b: vec3) -> vec3`
+- `vadd(a: vec4, b: vec4) -> vec4`
+
+### `vsub(a, b) -> a`
+Overloaded element-wise subtraction (`a - b`).
+
+Overloads:
+- `vsub(a: vec3, b: vec3) -> vec3`
+- `vsub(a: vec4, b: vec4) -> vec4`
+
+### `vscale(a, s) -> a`
+Overloaded scalar multiplication (`a * s`).
+
+Overloads:
+- `vscale(a: vec3, s: DOUBLE) -> vec3`
+- `vscale(a: vec4, s: DOUBLE) -> vec4`
+
+### `vdot(a, b) -> DOUBLE`
+Overloaded dot product.
+
+Overloads:
+- `vdot(a: vec3, b: vec3) -> DOUBLE`
+- `vdot(a: vec4, b: vec4) -> DOUBLE`
+
+### `vnorm2(a) -> DOUBLE`
+Overloaded squared Euclidean norm.
+
+Overloads:
+- `vnorm2(a: vec3) -> DOUBLE`
+- `vnorm2(a: vec4) -> DOUBLE`
+
+### `vnorm(a) -> DOUBLE`
+Overloaded Euclidean norm (`sqrt(vnorm2(a))`).
+
+Overloads:
+- `vnorm(a: vec3) -> DOUBLE`
+- `vnorm(a: vec4) -> DOUBLE`
+
+### `vnormalize(a) -> a`
+Overloaded unit normalization (`a / vnorm(a)`).
+
+Overloads:
+- `vnormalize(a: vec3) -> vec3`
+- `vnormalize(a: vec4) -> vec4`
+
+### `vcross(a: vec3, b: vec3) -> vec3`
+3D cross product (`a × b`).
+
+### `vcos_angle(a, b) -> DOUBLE`
+Overloaded cosine of the angle between vectors:
+`vdot(a,b) / (vnorm(a) * vnorm(b))`.
+No clamping is applied.
+
+Overloads:
+- `vcos_angle(a: vec3, b: vec3) -> DOUBLE`
+- `vcos_angle(a: vec4, b: vec4) -> DOUBLE`
+
+### `vangle(a, b) -> DOUBLE`
+Overloaded angle in radians between vectors (`acos(vcos_angle(a,b))`).
+
+Overloads:
+- `vangle(a: vec3, b: vec3) -> DOUBLE`
+- `vangle(a: vec4, b: vec4) -> DOUBLE`
+
+### `vproj(a, b) -> b`
+Overloaded vector projection of `a` onto `b`:
+`(vdot(a,b) / vnorm2(b)) * b`.
+
+Overloads:
+- `vproj(a: vec3, b: vec3) -> vec3`
+- `vproj(a: vec4, b: vec4) -> vec4`
+
+### `vrej(a, b) -> a`
+Overloaded vector rejection of `a` from `b`:
+`a - vproj(a, b)`.
+
+Overloads:
+- `vrej(a: vec3, b: vec3) -> vec3`
+- `vrej(a: vec4, b: vec4) -> vec4`
+
 ### `quat_from_axis_angle(axis: vec3, th: DOUBLE) -> quat`
-Creates a quaternion representing a rotation of `th` radians about a **unit** axis.
+Creates a quaternion representing a rotation of `th` radians about an axis.
+The axis is normalized internally. If the axis norm is zero, returns `NULL`.
 
 Example:
 ```sql
@@ -77,6 +181,7 @@ SELECT se3_make(
 
 ### `se3_from_axis_angle(t: vec3, axis: vec3, th: DOUBLE) -> W`
 Constructs a transform from translation and axis-angle rotation.
+The axis is normalized internally. If the axis norm is zero, returns `NULL`.
 
 Example:
 ```sql
