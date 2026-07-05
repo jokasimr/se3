@@ -5,6 +5,59 @@
 # Require statement will ensure this test is run with this extension loaded
 require se3
 
+# function metadata is attached to all se3 scalar overloads
+query IIII
+WITH names(function_name) AS (
+  VALUES
+    ('vvec'), ('vadd'), ('vsub'), ('vscale'), ('vdot'), ('vnorm2'), ('vnorm'), ('vnormalize'),
+    ('vcross'), ('vcos_angle'), ('vangle'), ('vproj'), ('vrej'), ('quat_from_axis_angle'),
+    ('qmul'), ('qconj'), ('qnorm2'), ('se3_identity'), ('se3_make'), ('se3_from_axis_angle'),
+    ('se3_apply'), ('se3_inv'), ('se3_compose')
+)
+SELECT count(*), count(description), count(examples), count(categories)
+FROM duckdb_functions()
+WHERE function_type = 'scalar'
+  AND function_name IN (SELECT function_name FROM names);
+----
+47	47	47	47
+
+# vvec overload metadata is matched by concrete parameter types
+query II
+SELECT
+  sum(CASE WHEN array_length(parameter_types) = 3
+            AND parameters[1] = 'x'
+            AND parameters[2] = 'y'
+            AND parameters[3] = 'z'
+            AND description = 'Creates a vec3 from x, y, and z components.'
+           THEN 1 ELSE 0 END),
+  sum(CASE WHEN array_length(parameter_types) = 4
+            AND parameters[1] = 'w'
+            AND parameters[2] = 'x'
+            AND parameters[3] = 'y'
+            AND parameters[4] = 'z'
+            AND description = 'Creates a vec4 from w, x, y, and z components.'
+           THEN 1 ELSE 0 END)
+FROM duckdb_functions()
+WHERE function_type = 'scalar'
+  AND function_name = 'vvec';
+----
+1	1
+
+# se3_compose uses one semantic description while exposing all accepted representations
+query III
+SELECT
+  count(*),
+  count(DISTINCT parameter_types::VARCHAR),
+  sum(CASE WHEN parameters[1] = 'W2'
+            AND parameters[2] = 'W1'
+            AND description = 'Composes two transformations, applying W1 first and then W2. W1 and W2 can each be a full transformation struct, a vec3 representing only the translation part, or a quat representing only the rotation part.'
+           THEN 1 ELSE 0 END)
+FROM duckdb_functions()
+WHERE function_type = 'scalar'
+  AND function_name = 'se3_compose';
+----
+9	9	9
+
 # quat_from_axis_angle produces unit quaternion for unit axis
 query I
 SELECT abs(qnorm2(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)) - 1.0) < 1e-12;

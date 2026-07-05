@@ -4,6 +4,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <cmath>
 
@@ -32,6 +33,30 @@ static LogicalType WType() {
 	f.emplace_back("t", Vec3Type());
 	f.emplace_back("q", QuatType());
 	return LogicalType::STRUCT(f);
+}
+
+// ------------------------- Function metadata helpers -------------------------
+static FunctionDescription FunctionMeta(vector<string> parameter_names, string description, vector<string> examples,
+                                        vector<string> categories, vector<LogicalType> parameter_types = {}) {
+	FunctionDescription result;
+	result.parameter_types = std::move(parameter_types);
+	result.parameter_names = std::move(parameter_names);
+	result.description = std::move(description);
+	result.examples = std::move(examples);
+	result.categories = std::move(categories);
+	return result;
+}
+
+static void RegisterScalarFunctions(ExtensionLoader &loader, string name, vector<ScalarFunction> functions,
+                                    vector<FunctionDescription> descriptions) {
+	ScalarFunctionSet set(std::move(name));
+	for (auto &function : functions) {
+		set.AddFunction(std::move(function));
+	}
+
+	CreateScalarFunctionInfo info(std::move(set));
+	info.descriptions = std::move(descriptions);
+	loader.RegisterFunction(std::move(info));
 }
 
 // ------------------------- Validity helpers -------------------------
@@ -2677,84 +2702,167 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 // ------------------------- Registration -------------------------
 static void LoadInternal(ExtensionLoader &loader) {
 	// Generic vector constructors and arithmetic
-	loader.RegisterFunction(ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                                       Vec3Type(), Vec3CtorFn));
-	loader.RegisterFunction(
-	    ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
-	                   QuatType(), Vec4CtorFn));
+	RegisterScalarFunctions(
+	    loader, "vvec",
+	    {ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, Vec3Type(),
+	                    Vec3CtorFn),
+	     ScalarFunction("vvec", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE},
+	                    QuatType(), Vec4CtorFn)},
+	    {FunctionMeta({"x", "y", "z"}, "Creates a vec3 from x, y, and z components.", {"vvec(1.0, 2.0, 3.0)"},
+	                  {"vector"}, {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}),
+	     FunctionMeta({"w", "x", "y", "z"}, "Creates a vec4 from w, x, y, and z components.",
+	                  {"vvec(1.0, 2.0, 3.0, 4.0)"}, {"vector"},
+	                  {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE})});
 
-	loader.RegisterFunction(ScalarFunction("vadd", {Vec3Type(), Vec3Type()}, Vec3Type(), VAddVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vadd", {QuatType(), QuatType()}, QuatType(), VAddVec4Fn));
+	RegisterScalarFunctions(loader, "vadd",
+	                        {ScalarFunction("vadd", {Vec3Type(), Vec3Type()}, Vec3Type(), VAddVec3Fn),
+	                         ScalarFunction("vadd", {QuatType(), QuatType()}, QuatType(), VAddVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the element-wise sum of a and b.",
+	                                      {"vadd(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vsub", {Vec3Type(), Vec3Type()}, Vec3Type(), VSubVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vsub", {QuatType(), QuatType()}, QuatType(), VSubVec4Fn));
+	RegisterScalarFunctions(loader, "vsub",
+	                        {ScalarFunction("vsub", {Vec3Type(), Vec3Type()}, Vec3Type(), VSubVec3Fn),
+	                         ScalarFunction("vsub", {QuatType(), QuatType()}, QuatType(), VSubVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the element-wise difference a - b.",
+	                                      {"vsub(vvec(4.0, 5.0, 6.0), vvec(1.0, 2.0, 3.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vscale", {Vec3Type(), LogicalType::DOUBLE}, Vec3Type(), VScaleVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vscale", {QuatType(), LogicalType::DOUBLE}, QuatType(), VScaleVec4Fn));
+	RegisterScalarFunctions(
+	    loader, "vscale",
+	    {ScalarFunction("vscale", {Vec3Type(), LogicalType::DOUBLE}, Vec3Type(), VScaleVec3Fn),
+	     ScalarFunction("vscale", {QuatType(), LogicalType::DOUBLE}, QuatType(), VScaleVec4Fn)},
+	    {FunctionMeta({"v", "s"}, "Scales vector v by scalar s.", {"vscale(vvec(1.0, 2.0, 3.0), 2.0)"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vdot", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VDotVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vdot", {QuatType(), QuatType()}, LogicalType::DOUBLE, VDotVec4Fn));
+	RegisterScalarFunctions(loader, "vdot",
+	                        {ScalarFunction("vdot", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VDotVec3Fn),
+	                         ScalarFunction("vdot", {QuatType(), QuatType()}, LogicalType::DOUBLE, VDotVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the dot product of a and b.",
+	                                      {"vdot(vvec(1.0, 2.0, 3.0), vvec(4.0, 5.0, 6.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vnorm2", {Vec3Type()}, LogicalType::DOUBLE, VNorm2Vec3Fn));
-	loader.RegisterFunction(ScalarFunction("vnorm2", {QuatType()}, LogicalType::DOUBLE, VNorm2Vec4Fn));
+	RegisterScalarFunctions(
+	    loader, "vnorm2",
+	    {ScalarFunction("vnorm2", {Vec3Type()}, LogicalType::DOUBLE, VNorm2Vec3Fn),
+	     ScalarFunction("vnorm2", {QuatType()}, LogicalType::DOUBLE, VNorm2Vec4Fn)},
+	    {FunctionMeta({"v"}, "Returns the squared Euclidean norm of v.", {"vnorm2(vvec(1.0, 2.0, 3.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vnorm", {Vec3Type()}, LogicalType::DOUBLE, VNormVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vnorm", {QuatType()}, LogicalType::DOUBLE, VNormVec4Fn));
+	RegisterScalarFunctions(
+	    loader, "vnorm",
+	    {ScalarFunction("vnorm", {Vec3Type()}, LogicalType::DOUBLE, VNormVec3Fn),
+	     ScalarFunction("vnorm", {QuatType()}, LogicalType::DOUBLE, VNormVec4Fn)},
+	    {FunctionMeta({"v"}, "Returns the Euclidean norm of v.", {"vnorm(vvec(1.0, 2.0, 3.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vnormalize", {Vec3Type()}, Vec3Type(), VNormalizeVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vnormalize", {QuatType()}, QuatType(), VNormalizeVec4Fn));
+	RegisterScalarFunctions(loader, "vnormalize",
+	                        {ScalarFunction("vnormalize", {Vec3Type()}, Vec3Type(), VNormalizeVec3Fn),
+	                         ScalarFunction("vnormalize", {QuatType()}, QuatType(), VNormalizeVec4Fn)},
+	                        {FunctionMeta({"v"}, "Returns v divided by its Euclidean norm.",
+	                                      {"vnormalize(vvec(1.0, 2.0, 3.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vcross", {Vec3Type(), Vec3Type()}, Vec3Type(), VCrossVec3Fn));
+	RegisterScalarFunctions(loader, "vcross",
+	                        {ScalarFunction("vcross", {Vec3Type(), Vec3Type()}, Vec3Type(), VCrossVec3Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the 3D cross product of a and b.",
+	                                      {"vcross(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))"}, {"vector"})});
 
-	loader.RegisterFunction(
-	    ScalarFunction("vcos_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCosAngleVec3Fn));
-	loader.RegisterFunction(
-	    ScalarFunction("vcos_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VCosAngleVec4Fn));
+	RegisterScalarFunctions(
+	    loader, "vcos_angle",
+	    {ScalarFunction("vcos_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCosAngleVec3Fn),
+	     ScalarFunction("vcos_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VCosAngleVec4Fn)},
+	    {FunctionMeta({"a", "b"}, "Returns vdot(a, b) / (vnorm(a) * vnorm(b)) without clamping.",
+	                  {"vcos_angle(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vangle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VAngleVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vangle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VAngleVec4Fn));
+	RegisterScalarFunctions(loader, "vangle",
+	                        {ScalarFunction("vangle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VAngleVec3Fn),
+	                         ScalarFunction("vangle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VAngleVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the angle in radians between a and b.",
+	                                      {"vangle(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vproj", {Vec3Type(), Vec3Type()}, Vec3Type(), VProjVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vproj", {QuatType(), QuatType()}, QuatType(), VProjVec4Fn));
+	RegisterScalarFunctions(loader, "vproj",
+	                        {ScalarFunction("vproj", {Vec3Type(), Vec3Type()}, Vec3Type(), VProjVec3Fn),
+	                         ScalarFunction("vproj", {QuatType(), QuatType()}, QuatType(), VProjVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the projection of a onto b.",
+	                                      {"vproj(vvec(2.0, 2.0, 0.0), vvec(1.0, 0.0, 0.0))"}, {"vector"})});
 
-	loader.RegisterFunction(ScalarFunction("vrej", {Vec3Type(), Vec3Type()}, Vec3Type(), VRejVec3Fn));
-	loader.RegisterFunction(ScalarFunction("vrej", {QuatType(), QuatType()}, QuatType(), VRejVec4Fn));
+	RegisterScalarFunctions(loader, "vrej",
+	                        {ScalarFunction("vrej", {Vec3Type(), Vec3Type()}, Vec3Type(), VRejVec3Fn),
+	                         ScalarFunction("vrej", {QuatType(), QuatType()}, QuatType(), VRejVec4Fn)},
+	                        {FunctionMeta({"a", "b"}, "Returns the rejection of a from b.",
+	                                      {"vrej(vvec(2.0, 2.0, 0.0), vvec(1.0, 0.0, 0.0))"}, {"vector"})});
 
-	loader.RegisterFunction(
-	    ScalarFunction("quat_from_axis_angle", {Vec3Type(), LogicalType::DOUBLE}, QuatType(), QuatFromAxisAngleFn));
+	RegisterScalarFunctions(
+	    loader, "quat_from_axis_angle",
+	    {ScalarFunction("quat_from_axis_angle", {Vec3Type(), LogicalType::DOUBLE}, QuatType(), QuatFromAxisAngleFn)},
+	    {FunctionMeta(
+	        {"axis", "angle"},
+	        "Constructs a unit quaternion from axis and angle in radians. Returns NULL for a zero-length axis.",
+	        {"quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()/2.0)"}, {"quaternion"})});
 
-	loader.RegisterFunction(ScalarFunction("qmul", {QuatType(), QuatType()}, QuatType(), QMulFn));
+	RegisterScalarFunctions(loader, "qmul", {ScalarFunction("qmul", {QuatType(), QuatType()}, QuatType(), QMulFn)},
+	                        {FunctionMeta({"qA", "qB"}, "Multiplies quaternions qA and qB.",
+	                                      {"qmul(quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()/2.0), "
+	                                       "quat_from_axis_angle(vvec(0.0, 1.0, 0.0), pi()/2.0))"},
+	                                      {"quaternion"})});
 
-	loader.RegisterFunction(ScalarFunction("qconj", {QuatType()}, QuatType(), QConjFn));
+	RegisterScalarFunctions(loader, "qconj", {ScalarFunction("qconj", {QuatType()}, QuatType(), QConjFn)},
+	                        {FunctionMeta({"q"}, "Returns the quaternion conjugate of q.",
+	                                      {"qconj(vvec(1.0, 2.0, 3.0, 4.0))"}, {"quaternion"})});
 
-	loader.RegisterFunction(ScalarFunction("qnorm2", {QuatType()}, LogicalType::DOUBLE, QNorm2Fn));
+	RegisterScalarFunctions(
+	    loader, "qnorm2", {ScalarFunction("qnorm2", {QuatType()}, LogicalType::DOUBLE, QNorm2Fn)},
+	    {FunctionMeta({"q"}, "Returns the squared norm of quaternion q.",
+	                  {"qnorm2(quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()/2.0))"}, {"quaternion"})});
 
-	loader.RegisterFunction(ScalarFunction("se3_identity", {}, WType(), Se3IdentityFn));
+	RegisterScalarFunctions(loader, "se3_identity", {ScalarFunction("se3_identity", {}, WType(), Se3IdentityFn)},
+	                        {FunctionMeta({}, "Returns the identity transform.", {"se3_identity()"}, {"se3"})});
 
-	loader.RegisterFunction(ScalarFunction("se3_make", {Vec3Type(), QuatType()}, WType(), Se3MakeFn));
+	RegisterScalarFunctions(
+	    loader, "se3_make", {ScalarFunction("se3_make", {Vec3Type(), QuatType()}, WType(), Se3MakeFn)},
+	    {FunctionMeta({"t", "q"}, "Constructs a transform from translation t and quaternion q.",
+	                  {"se3_make(vvec(1.0, 2.0, 3.0), quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()/2.0))"},
+	                  {"se3"})});
 
-	loader.RegisterFunction(ScalarFunction("se3_from_axis_angle", {Vec3Type(), Vec3Type(), LogicalType::DOUBLE},
-	                                       WType(), Se3FromAxisAngleFn));
+	RegisterScalarFunctions(
+	    loader, "se3_from_axis_angle",
+	    {ScalarFunction("se3_from_axis_angle", {Vec3Type(), Vec3Type(), LogicalType::DOUBLE}, WType(),
+	                    Se3FromAxisAngleFn)},
+	    {FunctionMeta({"t", "axis", "angle"},
+	                  "Constructs a transform from translation t and an axis-angle rotation. Returns NULL for a "
+	                  "zero-length axis.",
+	                  {"se3_from_axis_angle(vvec(1.0, 0.0, 0.0), vvec(0.0, 0.0, 1.0), pi()/2.0)"}, {"se3"})});
 
-	loader.RegisterFunction(ScalarFunction("se3_apply", {WType(), Vec3Type()}, Vec3Type(), Se3ApplyFn));
-	loader.RegisterFunction(ScalarFunction("se3_apply", {Vec3Type(), Vec3Type()}, Vec3Type(), Se3ApplyTFn));
-	loader.RegisterFunction(ScalarFunction("se3_apply", {QuatType(), Vec3Type()}, Vec3Type(), Se3ApplyQFn));
+	RegisterScalarFunctions(
+	    loader, "se3_apply",
+	    {ScalarFunction("se3_apply", {WType(), Vec3Type()}, Vec3Type(), Se3ApplyFn),
+	     ScalarFunction("se3_apply", {Vec3Type(), Vec3Type()}, Vec3Type(), Se3ApplyTFn),
+	     ScalarFunction("se3_apply", {QuatType(), Vec3Type()}, Vec3Type(), Se3ApplyQFn)},
+	    {FunctionMeta({"W", "p"},
+	                  "Applies transformation W to point p. W can be a full transformation struct, a vec3 representing "
+	                  "only the translation part, or a quat representing only the rotation part.",
+	                  {"se3_apply(se3_identity(), vvec(1.0, 2.0, 3.0))"}, {"se3"})});
 
-	// se3_inv overloads
-	loader.RegisterFunction(ScalarFunction("se3_inv", {Vec3Type()}, Vec3Type(), Se3InvTFn));
-	loader.RegisterFunction(ScalarFunction("se3_inv", {QuatType()}, QuatType(), Se3InvQFn));
-	loader.RegisterFunction(ScalarFunction("se3_inv", {WType()}, WType(), Se3InvWFn));
+	RegisterScalarFunctions(
+	    loader, "se3_inv",
+	    {ScalarFunction("se3_inv", {Vec3Type()}, Vec3Type(), Se3InvTFn),
+	     ScalarFunction("se3_inv", {QuatType()}, QuatType(), Se3InvQFn),
+	     ScalarFunction("se3_inv", {WType()}, WType(), Se3InvWFn)},
+	    {FunctionMeta({"W"},
+	                  "Returns the inverse transformation of W. W can be a full transformation struct, a vec3 "
+	                  "representing only the translation part, or a quat representing only the rotation part.",
+	                  {"se3_inv(se3_identity())"}, {"se3"})});
 
-	// se3_compose overloads (apply B then A)
-	loader.RegisterFunction(ScalarFunction("se3_compose", {WType(), WType()}, WType(), Se3ComposeWWFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {Vec3Type(), Vec3Type()}, Vec3Type(), Se3ComposeTTFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {QuatType(), QuatType()}, QuatType(), Se3ComposeQQFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {QuatType(), Vec3Type()}, WType(), Se3ComposeQTFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {Vec3Type(), QuatType()}, WType(), Se3ComposeTQFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {WType(), QuatType()}, WType(), Se3ComposeWQFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {QuatType(), WType()}, WType(), Se3ComposeQWFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {WType(), Vec3Type()}, WType(), Se3ComposeWTFn));
-	loader.RegisterFunction(ScalarFunction("se3_compose", {Vec3Type(), WType()}, WType(), Se3ComposeTWFn));
+	RegisterScalarFunctions(
+	    loader, "se3_compose",
+	    {ScalarFunction("se3_compose", {WType(), WType()}, WType(), Se3ComposeWWFn),
+	     ScalarFunction("se3_compose", {Vec3Type(), Vec3Type()}, Vec3Type(), Se3ComposeTTFn),
+	     ScalarFunction("se3_compose", {QuatType(), QuatType()}, QuatType(), Se3ComposeQQFn),
+	     ScalarFunction("se3_compose", {QuatType(), Vec3Type()}, WType(), Se3ComposeQTFn),
+	     ScalarFunction("se3_compose", {Vec3Type(), QuatType()}, WType(), Se3ComposeTQFn),
+	     ScalarFunction("se3_compose", {WType(), QuatType()}, WType(), Se3ComposeWQFn),
+	     ScalarFunction("se3_compose", {QuatType(), WType()}, WType(), Se3ComposeQWFn),
+	     ScalarFunction("se3_compose", {WType(), Vec3Type()}, WType(), Se3ComposeWTFn),
+	     ScalarFunction("se3_compose", {Vec3Type(), WType()}, WType(), Se3ComposeTWFn)},
+	    {FunctionMeta({"W2", "W1"},
+	                  "Composes two transformations, applying W1 first and then W2. W1 and W2 can each be a full "
+	                  "transformation struct, a vec3 representing only the translation part, or a quat representing "
+	                  "only the rotation part.",
+	                  {"se3_compose(se3_identity(), se3_identity())"}, {"se3"})});
 }
 
 void Se3Extension::Load(ExtensionLoader &loader) {
