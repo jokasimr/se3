@@ -140,15 +140,13 @@ static void Vec3CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
 			if (!RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -175,8 +173,6 @@ static void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid =
 	    w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
@@ -184,7 +180,7 @@ static void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
 			if (!RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -223,8 +219,6 @@ static void VAddVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -234,7 +228,7 @@ static void VAddVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -277,8 +271,6 @@ static void VAddVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -290,7 +282,7 @@ static void VAddVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -330,8 +322,6 @@ static void VSubVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -341,7 +331,7 @@ static void VSubVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -384,8 +374,6 @@ static void VSubVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -397,7 +385,7 @@ static void VSubVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -431,8 +419,6 @@ static void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() &&
 	                       az_uf.validity.AllValid() && s_uf.validity.AllValid();
@@ -441,7 +427,7 @@ static void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
 			    !RowIsValid(s_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -476,8 +462,6 @@ static void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && s_uf.validity.AllValid();
@@ -486,7 +470,7 @@ static void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(s_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -527,7 +511,6 @@ static void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -580,7 +563,6 @@ static void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -623,7 +605,6 @@ static void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid =
 	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
@@ -664,7 +645,6 @@ static void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
@@ -732,8 +712,6 @@ static void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid =
 	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
@@ -741,7 +719,7 @@ static void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -778,8 +756,6 @@ static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
@@ -788,7 +764,7 @@ static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -834,8 +810,6 @@ static void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -845,7 +819,7 @@ static void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -892,7 +866,6 @@ static void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result)
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -956,7 +929,6 @@ static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result)
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -1047,8 +1019,6 @@ static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -1058,7 +1028,7 @@ static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1109,8 +1079,6 @@ static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -1122,7 +1090,7 @@ static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1172,8 +1140,6 @@ static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -1183,7 +1149,7 @@ static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1234,8 +1200,6 @@ static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -1247,7 +1211,7 @@ static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1295,8 +1259,6 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = axis_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() &&
 	                       az_uf.validity.AllValid() && th_uf.validity.AllValid();
@@ -1305,7 +1267,7 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 		if (!all_valid) {
 			if (!RowIsValid(axis_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
 			    !RowIsValid(th_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1315,7 +1277,7 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 		const double azv = az[az_sel->get_index(i)];
 		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
 		if (axis_n == 0.0) {
-			out_validity.SetInvalid(i);
+			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 		const double inv_axis_n = 1.0 / axis_n;
@@ -1375,8 +1337,6 @@ static void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -1388,7 +1348,7 @@ static void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1428,8 +1388,6 @@ static void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
 	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
@@ -1438,7 +1396,7 @@ static void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(q_uf, i) || !RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) ||
 			    !RowIsValid(z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1475,7 +1433,6 @@ static void QNorm2Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
 	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
@@ -1503,8 +1460,6 @@ static void Se3IdentityFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
 	PrepareWOut(result, tx, ty, tz, qw, qx, qy, qz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	for (idx_t i = 0; i < n; i++) {
 		tx[i] = 0.0;
@@ -1558,8 +1513,6 @@ static void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = t_uf.validity.AllValid() && q_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
 	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
@@ -1570,7 +1523,7 @@ static void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
 			    !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) ||
 			    !RowIsValid(qz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1627,8 +1580,6 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = t_uf.validity.AllValid() && axis_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
 	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
@@ -1639,7 +1590,7 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 			if (!RowIsValid(t_uf, i) || !RowIsValid(axis_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
 			    !RowIsValid(tz_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
 			    !RowIsValid(th_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1649,7 +1600,7 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 		const double azv = az[az_sel->get_index(i)];
 		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
 		if (axis_n == 0.0) {
-			out_validity.SetInvalid(i);
+			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 		const double inv_axis_n = 1.0 / axis_n;
@@ -1726,8 +1677,6 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
 	                       p_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
@@ -1741,7 +1690,7 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) ||
 			    !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(px_uf, i) ||
 			    !RowIsValid(py_uf, i) || !RowIsValid(pz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1792,8 +1741,6 @@ static void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = t_uf.validity.AllValid() && p_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
 	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && px_uf.validity.AllValid() &&
@@ -1803,7 +1750,7 @@ static void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(t_uf, i) || !RowIsValid(p_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
 			    !RowIsValid(tz_uf, i) || !RowIsValid(px_uf, i) || !RowIsValid(py_uf, i) || !RowIsValid(pz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1845,8 +1792,6 @@ static void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && p_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
 	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
@@ -1857,7 +1802,7 @@ static void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(q_uf, i) || !RowIsValid(p_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
 			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(px_uf, i) || !RowIsValid(py_uf, i) ||
 			    !RowIsValid(pz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1892,8 +1837,6 @@ static void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid =
 	    t_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid();
@@ -1901,7 +1844,7 @@ static void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
 			if (!RowIsValid(t_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1932,8 +1875,6 @@ static void Se3InvQFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
 	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
@@ -1942,7 +1883,7 @@ static void Se3InvQFn(DataChunk &input, ExpressionState &, Vector &result) {
 		if (!all_valid) {
 			if (!RowIsValid(q_uf, i) || !RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) ||
 			    !RowIsValid(z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -1987,8 +1928,6 @@ static void Se3InvWFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
 	                       tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid() &&
@@ -2000,7 +1939,7 @@ static void Se3InvWFn(DataChunk &input, ExpressionState &, Vector &result) {
 			if (!RowIsValid(w_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(tx_uf, i) ||
 			    !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
 			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2087,8 +2026,6 @@ static void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && at_uf.validity.AllValid() &&
 	                       aq_uf.validity.AllValid() && bt_uf.validity.AllValid() && bq_uf.validity.AllValid() &&
@@ -2105,7 +2042,7 @@ static void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) 
 			    !RowIsValid(atz_uf, i) || !RowIsValid(aqw_uf, i) || !RowIsValid(aqx_uf, i) || !RowIsValid(aqy_uf, i) ||
 			    !RowIsValid(aqz_uf, i) || !RowIsValid(btx_uf, i) || !RowIsValid(bty_uf, i) || !RowIsValid(btz_uf, i) ||
 			    !RowIsValid(bqw_uf, i) || !RowIsValid(bqx_uf, i) || !RowIsValid(bqy_uf, i) || !RowIsValid(bqz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2174,8 +2111,6 @@ static void Se3ComposeTTFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
 	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
@@ -2185,7 +2120,7 @@ static void Se3ComposeTTFn(DataChunk &input, ExpressionState &, Vector &result) 
 		if (!all_valid) {
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
 			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2231,8 +2166,6 @@ static void Se3ComposeQQFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, ow, ox, oy, oz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
 	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
@@ -2244,7 +2177,7 @@ static void Se3ComposeQQFn(DataChunk &input, ExpressionState &, Vector &result) 
 			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
 			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
 			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2290,8 +2223,6 @@ static void Se3ComposeQTFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && t_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
 	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
@@ -2302,7 +2233,7 @@ static void Se3ComposeQTFn(DataChunk &input, ExpressionState &, Vector &result) 
 			if (!RowIsValid(q_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
 			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
 			    !RowIsValid(tz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2356,8 +2287,6 @@ static void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && t_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
 	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
@@ -2368,7 +2297,7 @@ static void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) 
 			if (!RowIsValid(q_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
 			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
 			    !RowIsValid(tz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2440,8 +2369,6 @@ static void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
 	                       q2_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
@@ -2455,7 +2382,7 @@ static void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) 
 			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) ||
 			    !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(q2w_uf, i) ||
 			    !RowIsValid(q2x_uf, i) || !RowIsValid(q2y_uf, i) || !RowIsValid(q2z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2533,8 +2460,6 @@ static void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && t_uf.validity.AllValid() &&
 	                       wq_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
@@ -2548,7 +2473,7 @@ static void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) 
 			    !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) ||
 			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(wqw_uf, i) ||
 			    !RowIsValid(wqx_uf, i) || !RowIsValid(wqy_uf, i) || !RowIsValid(wqz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2623,8 +2548,6 @@ static void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
 	                       t2_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
@@ -2638,7 +2561,7 @@ static void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) 
 			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) ||
 			    !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(t2x_uf, i) ||
 			    !RowIsValid(t2y_uf, i) || !RowIsValid(t2z_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}
@@ -2709,8 +2632,6 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
-	auto &out_validity = FlatVector::Validity(result);
-	out_validity.SetAllValid(n);
 
 	const bool all_valid = t2_uf.validity.AllValid() && w_uf.validity.AllValid() && t_uf.validity.AllValid() &&
 	                       q_uf.validity.AllValid() && t2x_uf.validity.AllValid() && t2y_uf.validity.AllValid() &&
@@ -2724,7 +2645,7 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 			    !RowIsValid(t2x_uf, i) || !RowIsValid(t2y_uf, i) || !RowIsValid(t2z_uf, i) || !RowIsValid(tx_uf, i) ||
 			    !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
 			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i)) {
-				out_validity.SetInvalid(i);
+				FlatVector::SetNull(result, i, true);
 				continue;
 			}
 		}

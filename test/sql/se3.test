@@ -90,6 +90,77 @@ SELECT se3_identity() IS NULL;
 ----
 false
 
+# null struct outputs must also expose NULL fields through struct_extract/dot access
+query II
+WITH r AS (
+  SELECT se3_apply(
+    struct_pack(x:=NULL, y:=2.0, z:=3.0),
+    struct_pack(x:=1.0, y:=2.0, z:=3.0)
+  ) AS v
+)
+SELECT v IS NULL, v.x IS NULL FROM r;
+----
+true	true
+
+query II
+WITH r AS (
+  SELECT qconj(CAST(NULL AS STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE))) AS q
+)
+SELECT q IS NULL, q.w IS NULL FROM r;
+----
+true	true
+
+query III
+WITH r AS (
+  SELECT se3_from_axis_angle(
+    struct_pack(x:=1.0, y:=2.0, z:=3.0),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0),
+    1.0
+  ) AS w
+)
+SELECT w IS NULL,
+       struct_extract(w, 't') IS NULL,
+       struct_extract(struct_extract(w, 't'), 'x') IS NULL
+FROM r;
+----
+true	true	true
+
+query III
+WITH r AS (
+  SELECT se3_from_axis_angle(
+    struct_pack(x:=1.0, y:=2.0, z:=3.0),
+    struct_pack(x:=0.0, y:=0.0, z:=0.0),
+    1.0
+  ) AS w
+)
+SELECT w IS NULL,
+       struct_extract(w, 'q') IS NULL,
+       struct_extract(struct_extract(w, 'q'), 'w') IS NULL
+FROM r;
+----
+true	true	true
+
+query IIII
+WITH mix(id, v) AS (
+  VALUES
+    (1, CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))),
+    (2, struct_pack(x:=2.0, y:=20.0, z:=200.0)),
+    (3, struct_pack(x:=NULL, y:=30.0, z:=300.0)),
+    (4, struct_pack(x:=4.0, y:=40.0, z:=400.0))
+),
+r AS (
+  SELECT id, se3_apply(v, struct_pack(x:=1.0, y:=1.0, z:=1.0)) AS out
+  FROM mix
+)
+SELECT id, out IS NULL, out.x IS NULL, out.x
+FROM r
+ORDER BY id;
+----
+1	true	true	NULL
+2	false	false	3.0
+3	true	true	NULL
+4	false	false	5.0
+
 query I
 SELECT se3_apply(CAST(NULL AS STRUCT(
     t STRUCT(x DOUBLE, y DOUBLE, z DOUBLE),
