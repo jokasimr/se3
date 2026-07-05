@@ -45,22 +45,22 @@ Expected result (first translate the point by (1,0,0) to (2,0,0), then rotate 90
 {x: 0.0, y: 2.0, z: 0.0}
 ```
 
-Compose transformations (apply `W1` then `W2`):
+Compose transformations with `se3_compose(W2, W1)`: apply `W1` first, then `W2`.
 ```sql
 SELECT se3_apply(
   se3_compose(
-    se3_from_axis_angle(struct_pack(x:=0.0, y:=1.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0),
-    se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)
+    se3_from_axis_angle(struct_pack(x:=0.0, y:=1.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0), -- W2
+    se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0)  -- W1
   ),
   struct_pack(x:=1.0, y:=0.0, z:=0.0)
 );
 ```
-Expected result:
+Expected result (roundoff omitted):
 ```
 {x: -3.0, y: 0.0, z: 0.0}
 ```
 
-For the full API and semantics, see `API.md` and `SPEC.md`.
+For the full API and semantics, see [API.md](API.md) and [SPEC.md](SPEC.md).
 
 ## Running the tests
 ```sh
