@@ -1628,10 +1628,44 @@ SELECT isnan(vcos_angle(vvec(0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0)));
 ----
 true
 
+query II
+SELECT
+  isnan(vcos_angle(vvec('nan'::DOUBLE, 1.0, 0.0), vvec(1.0, 0.0, 0.0))),
+  isnan(vcos_angle(vvec('nan'::DOUBLE, 1.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)));
+----
+true	true
+
 query I
 SELECT isnan((vproj(vvec(1.0, 2.0, 3.0), vvec(0.0, 0.0, 0.0))).x);
 ----
 true
+
+# vcos_angle/vangle should avoid intermediate overflow/underflow for finite non-zero vectors
+query IIIIIIIIIIII
+SELECT
+  abs(vcos_angle(vvec(1e200, 0.0, 0.0), vvec(1e200, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e200, 0.0, 0.0), vvec(1e200, 0.0, 0.0))) < 1e-12,
+  abs(vcos_angle(vvec(1e-200, 0.0, 0.0), vvec(1e-200, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e-200, 0.0, 0.0), vvec(1e-200, 0.0, 0.0))) < 1e-12,
+  abs(vcos_angle(vvec(1e100, 0.0, 0.0), vvec(1e100, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e100, 0.0, 0.0), vvec(1e100, 0.0, 0.0))) < 1e-12,
+  abs(vcos_angle(vvec(1e-100, 0.0, 0.0), vvec(1e-100, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e-100, 0.0, 0.0), vvec(1e-100, 0.0, 0.0))) < 1e-12,
+  abs(vcos_angle(vvec(1e-80, 0.0, 0.0), vvec(1e-80, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e-80, 0.0, 0.0), vvec(1e-80, 0.0, 0.0))) < 1e-12,
+  abs(vcos_angle(vvec(1e-320, 0.0, 0.0), vvec(1e-320, 0.0, 0.0)) - 1.0) < 1e-12,
+  abs(vangle(vvec(1e-320, 0.0, 0.0), vvec(1e-320, 0.0, 0.0))) < 1e-12;
+----
+true	true	true	true	true	true	true	true	true	true	true	true
+
+query IIII
+SELECT
+  abs(vcos_angle(vvec(1e200, 0.0, 0.0), vvec(0.0, 1e200, 0.0))) < 1e-12,
+  abs(vangle(vvec(1e200, 0.0, 0.0), vvec(0.0, 1e200, 0.0)) - pi()/2.0) < 1e-12,
+  abs(vcos_angle(vvec(1e200, 0.0, 0.0, 0.0), vvec(0.0, 1e200, 0.0, 0.0))) < 1e-12,
+  abs(vangle(vvec(1e200, 0.0, 0.0, 0.0), vvec(0.0, 1e200, 0.0, 0.0)) - pi()/2.0) < 1e-12;
+----
+true	true	true	true
 
 # additional vector function coverage
 query I

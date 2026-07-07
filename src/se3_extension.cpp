@@ -94,6 +94,83 @@ static inline void QInvRotate(double qw, double qx, double qy, double qz, double
 	QRotate(qw, -qx, -qy, -qz, vx, vy, vz, ox, oy, oz);
 }
 
+static inline double MaxAbs3(double x, double y, double z) {
+	const double ax = std::fabs(x);
+	const double ay = std::fabs(y);
+	const double az = std::fabs(z);
+	const double m = ax > ay ? ax : ay;
+	return m > az ? m : az;
+}
+
+static inline double MaxAbs4(double w, double x, double y, double z) {
+	const double aw_abs = std::fabs(w);
+	const double ax = std::fabs(x);
+	const double ay = std::fabs(y);
+	const double az = std::fabs(z);
+	const double m0 = aw_abs > ax ? aw_abs : ax;
+	const double m1 = ay > az ? ay : az;
+	return m0 > m1 ? m0 : m1;
+}
+
+static constexpr double SQRT_DBL_MIN = 1.4916681462400413e-154;
+
+static inline double ScaledCosAngle3(double ax, double ay, double az, double bx, double by, double bz) {
+	const double ascale = MaxAbs3(ax, ay, az);
+	const double bscale = MaxAbs3(bx, by, bz);
+	const double sax = ax / ascale;
+	const double say = ay / ascale;
+	const double saz = az / ascale;
+	const double sbx = bx / bscale;
+	const double sby = by / bscale;
+	const double sbz = bz / bscale;
+
+	const double dot = sax * sbx + say * sby + saz * sbz;
+	const double na2 = sax * sax + say * say + saz * saz;
+	const double nb2 = sbx * sbx + sby * sby + sbz * sbz;
+	return dot / std::sqrt(na2 * nb2);
+}
+
+static inline double ScaledCosAngle4(double aw, double ax, double ay, double az, double bw, double bx, double by,
+                                     double bz) {
+	const double ascale = MaxAbs4(aw, ax, ay, az);
+	const double bscale = MaxAbs4(bw, bx, by, bz);
+	const double saw = aw / ascale;
+	const double sax = ax / ascale;
+	const double say = ay / ascale;
+	const double saz = az / ascale;
+	const double sbw = bw / bscale;
+	const double sbx = bx / bscale;
+	const double sby = by / bscale;
+	const double sbz = bz / bscale;
+
+	const double dot = saw * sbw + sax * sbx + say * sby + saz * sbz;
+	const double na2 = saw * saw + sax * sax + say * say + saz * saz;
+	const double nb2 = sbw * sbw + sbx * sbx + sby * sby + sbz * sbz;
+	return dot / std::sqrt(na2 * nb2);
+}
+
+static inline double CosAngle3(double ax, double ay, double az, double bx, double by, double bz) {
+	const double dot = ax * bx + ay * by + az * bz;
+	const double na2 = ax * ax + ay * ay + az * az;
+	const double nb2 = bx * bx + by * by + bz * bz;
+	const double denom = std::sqrt(na2 * nb2);
+	if (denom >= SQRT_DBL_MIN && std::isfinite(denom) && std::isfinite(dot)) {
+		return dot / denom;
+	}
+	return ScaledCosAngle3(ax, ay, az, bx, by, bz);
+}
+
+static inline double CosAngle4(double aw, double ax, double ay, double az, double bw, double bx, double by, double bz) {
+	const double dot = aw * bw + ax * bx + ay * by + az * bz;
+	const double na2 = aw * aw + ax * ax + ay * ay + az * az;
+	const double nb2 = bw * bw + bx * bx + by * by + bz * bz;
+	const double denom = std::sqrt(na2 * nb2);
+	if (denom >= SQRT_DBL_MIN && std::isfinite(denom) && std::isfinite(dot)) {
+		return dot / denom;
+	}
+	return ScaledCosAngle4(aw, ax, ay, az, bw, bx, by, bz);
+}
+
 // ------------------------- Output writers -------------------------
 static inline void PrepareStructChildrenFlat(Vector &struct_vec) {
 	struct_vec.SetVectorType(VectorType::FLAT_VECTOR);
@@ -912,12 +989,7 @@ static void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result)
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
 
-		const double dot = axv * bxv + ayv * byv + azv * bzv;
-		const double na2 = axv * axv + ayv * ayv + azv * azv;
-		const double nb2 = bxv * bxv + byv * byv + bzv * bzv;
-		const double denom = std::sqrt(na2 * nb2);
-
-		out[i] = dot / denom;
+		out[i] = CosAngle3(axv, ayv, azv, bxv, byv, bzv);
 	}
 }
 
@@ -979,12 +1051,7 @@ static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result)
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
 
-		const double dot = awv * bwv + axv * bxv + ayv * byv + azv * bzv;
-		const double na2 = awv * awv + axv * axv + ayv * ayv + azv * azv;
-		const double nb2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
-		const double denom = std::sqrt(na2 * nb2);
-
-		out[i] = dot / denom;
+		out[i] = CosAngle4(awv, axv, ayv, azv, bwv, bxv, byv, bzv);
 	}
 }
 
