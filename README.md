@@ -6,7 +6,7 @@ This repository is based on https://github.com/duckdb/extension-template, check 
 
 This extension, Se3, provides SE(3) rigid transformations using unit quaternions, implemented as vectorized DuckDB scalar functions.
 
-* Sequences of transformations can be combined to a 7 DOF struct that represents a combined translation and rotation.
+* Sequences of transformations can be combined to a 6 DOF transform stored as a 7-scalar struct: 3 translation components plus a 4-component unit quaternion.
 * Combined transformations can be efficiently applied to points in 3D without calling trigonometric functions.
 
 

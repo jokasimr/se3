@@ -77,4 +77,4 @@ Output includes:
 
 ## Benchmark Report
 For consolidated results and interpretation from the latest benchmark campaign, see:
-- [`docs/BENCHMARK_REPORT.md`](/home/johannes/personal/se3-extension/se3/docs/BENCHMARK_REPORT.md)
+- [`docs/BENCHMARK_REPORT.md`](../BENCHMARK_REPORT.md)

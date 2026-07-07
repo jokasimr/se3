@@ -14,8 +14,8 @@ The benchmark goals were:
 
 ## Benchmark Methodology
 Primary scripts:
-- [`scripts/benchmark_vector_vs_macros.sh`](/home/johannes/personal/se3-extension/se3/scripts/benchmark_vector_vs_macros.sh)
-- [`scripts/benchmark_vscale_vadd_se3_apply.sh`](/home/johannes/personal/se3-extension/se3/scripts/benchmark_vscale_vadd_se3_apply.sh)
+- [`scripts/benchmark_vector_vs_macros.sh`](../scripts/benchmark_vector_vs_macros.sh)
+- [`scripts/benchmark_vscale_vadd_se3_apply.sh`](../scripts/benchmark_vscale_vadd_se3_apply.sh)
 
 Environment note:
 - Thread-scaling benchmarks were run on a laptop CPU. Even with 6 logical/physical cores available, core performance is typically heterogeneous (e.g., performance vs efficiency cores), so scaling figures should be interpreted as machine-specific.
