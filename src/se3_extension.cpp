@@ -7,6 +7,7 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <cmath>
+#include <limits>
 
 namespace duckdb {
 
@@ -73,8 +74,12 @@ static inline void QMul(double aw, double ax, double ay, double az, double bw, d
 	rz = aw * bz + ax * by - ay * bx + az * bw;
 }
 
-static inline void QRotate(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
-                           double &oy, double &oz) {
+static inline double MaxAbs3(double x, double y, double z);
+static inline bool AllFinite3(double x, double y, double z);
+static inline bool AllFinite4(double w, double x, double y, double z);
+
+static inline void QRotateFast(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
+                               double &oy, double &oz) {
 	// t = 2*cross(qv, v)
 	const double tx1 = 2.0 * (qy * vz - qz * vy);
 	const double ty1 = 2.0 * (qz * vx - qx * vz);
@@ -87,6 +92,28 @@ static inline void QRotate(double qw, double qx, double qy, double qz, double vx
 	ox = vx + qw * tx1 + cx;
 	oy = vy + qw * ty1 + cy;
 	oz = vz + qw * tz1 + cz;
+}
+
+static inline void QRotate(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
+                           double &oy, double &oz) {
+	QRotateFast(qw, qx, qy, qz, vx, vy, vz, ox, oy, oz);
+	if (std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz)) {
+		return;
+	}
+	if (!AllFinite4(qw, qx, qy, qz) || !AllFinite3(vx, vy, vz)) {
+		return;
+	}
+
+	const double scale = MaxAbs3(vx, vy, vz);
+	if (scale == 0.0) {
+		return;
+	}
+
+	double sx, sy, sz;
+	QRotateFast(qw, qx, qy, qz, vx / scale, vy / scale, vz / scale, sx, sy, sz);
+	ox = sx * scale;
+	oy = sy * scale;
+	oz = sz * scale;
 }
 
 static inline void QInvRotate(double qw, double qx, double qy, double qz, double vx, double vy, double vz, double &ox,
@@ -113,6 +140,15 @@ static inline double MaxAbs4(double w, double x, double y, double z) {
 }
 
 static constexpr double SQRT_DBL_MIN = 1.4916681462400413e-154;
+static constexpr double DBL_MIN_NORMAL = std::numeric_limits<double>::min();
+
+static inline bool AllFinite3(double x, double y, double z) {
+	return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+}
+
+static inline bool AllFinite4(double w, double x, double y, double z) {
+	return std::isfinite(w) && std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+}
 
 static inline double ScaledCosAngle3(double ax, double ay, double az, double bx, double by, double bz) {
 	const double ascale = MaxAbs3(ax, ay, az);
@@ -169,6 +205,226 @@ static inline double CosAngle4(double aw, double ax, double ay, double az, doubl
 		return dot / denom;
 	}
 	return ScaledCosAngle4(aw, ax, ay, az, bw, bx, by, bz);
+}
+
+static inline double ClampFiniteCosAngle(double x) {
+	if (!std::isfinite(x)) {
+		return x;
+	}
+	if (x > 1.0) {
+		return 1.0;
+	}
+	if (x < -1.0) {
+		return -1.0;
+	}
+	return x;
+}
+
+static inline double ScaledNorm3(double x, double y, double z, double scale) {
+	const double sx = x / scale;
+	const double sy = y / scale;
+	const double sz = z / scale;
+	return scale * std::sqrt(sx * sx + sy * sy + sz * sz);
+}
+
+static inline double ScaledNorm4(double w, double x, double y, double z, double scale) {
+	const double sw = w / scale;
+	const double sx = x / scale;
+	const double sy = y / scale;
+	const double sz = z / scale;
+	return scale * std::sqrt(sw * sw + sx * sx + sy * sy + sz * sz);
+}
+
+static inline double Norm3(double x, double y, double z) {
+	const double n2 = x * x + y * y + z * z;
+	if (n2 >= DBL_MIN_NORMAL && std::isfinite(n2)) {
+		return std::sqrt(n2);
+	}
+	if (AllFinite3(x, y, z)) {
+		const double scale = MaxAbs3(x, y, z);
+		if (scale != 0.0) {
+			return ScaledNorm3(x, y, z, scale);
+		}
+	}
+	return std::sqrt(n2);
+}
+
+static inline double Norm4(double w, double x, double y, double z) {
+	const double n2 = w * w + x * x + y * y + z * z;
+	if (n2 >= DBL_MIN_NORMAL && std::isfinite(n2)) {
+		return std::sqrt(n2);
+	}
+	if (AllFinite4(w, x, y, z)) {
+		const double scale = MaxAbs4(w, x, y, z);
+		if (scale != 0.0) {
+			return ScaledNorm4(w, x, y, z, scale);
+		}
+	}
+	return std::sqrt(n2);
+}
+
+static inline void Normalize3(double x, double y, double z, double &ox, double &oy, double &oz) {
+	const double n2 = x * x + y * y + z * z;
+	if (n2 >= DBL_MIN_NORMAL && std::isfinite(n2)) {
+		const double inv_n = 1.0 / std::sqrt(n2);
+		ox = x * inv_n;
+		oy = y * inv_n;
+		oz = z * inv_n;
+		return;
+	}
+	if (AllFinite3(x, y, z)) {
+		const double scale = MaxAbs3(x, y, z);
+		if (scale != 0.0) {
+			const double sx = x / scale;
+			const double sy = y / scale;
+			const double sz = z / scale;
+			const double scaled_n = std::sqrt(sx * sx + sy * sy + sz * sz);
+			ox = sx / scaled_n;
+			oy = sy / scaled_n;
+			oz = sz / scaled_n;
+			return;
+		}
+	}
+
+	const double inv_n = 1.0 / std::sqrt(n2);
+	ox = x * inv_n;
+	oy = y * inv_n;
+	oz = z * inv_n;
+}
+
+static inline void Normalize4(double w, double x, double y, double z, double &ow, double &ox, double &oy, double &oz) {
+	const double n2 = w * w + x * x + y * y + z * z;
+	if (n2 >= DBL_MIN_NORMAL && std::isfinite(n2)) {
+		const double inv_n = 1.0 / std::sqrt(n2);
+		ow = w * inv_n;
+		ox = x * inv_n;
+		oy = y * inv_n;
+		oz = z * inv_n;
+		return;
+	}
+	if (AllFinite4(w, x, y, z)) {
+		const double scale = MaxAbs4(w, x, y, z);
+		if (scale != 0.0) {
+			const double sw = w / scale;
+			const double sx = x / scale;
+			const double sy = y / scale;
+			const double sz = z / scale;
+			const double scaled_n = std::sqrt(sw * sw + sx * sx + sy * sy + sz * sz);
+			ow = sw / scaled_n;
+			ox = sx / scaled_n;
+			oy = sy / scaled_n;
+			oz = sz / scaled_n;
+			return;
+		}
+	}
+
+	const double inv_n = 1.0 / std::sqrt(n2);
+	ow = w * inv_n;
+	ox = x * inv_n;
+	oy = y * inv_n;
+	oz = z * inv_n;
+}
+
+static inline void ScaledProjection3(double ax, double ay, double az, double bx, double by, double bz, double ascale,
+                                     double bscale, double &ox, double &oy, double &oz) {
+	if (ascale == 0.0) {
+		ox = 0.0;
+		oy = 0.0;
+		oz = 0.0;
+		return;
+	}
+
+	const double sax = ax / ascale;
+	const double say = ay / ascale;
+	const double saz = az / ascale;
+	const double sbx = bx / bscale;
+	const double sby = by / bscale;
+	const double sbz = bz / bscale;
+
+	const double dot = sax * sbx + say * sby + saz * sbz;
+	const double bn2 = sbx * sbx + sby * sby + sbz * sbz;
+	const double s = dot / bn2;
+	ox = ascale * sbx * s;
+	oy = ascale * sby * s;
+	oz = ascale * sbz * s;
+}
+
+static inline void ScaledProjection4(double aw, double ax, double ay, double az, double bw, double bx, double by,
+                                     double bz, double ascale, double bscale, double &ow, double &ox, double &oy,
+                                     double &oz) {
+	if (ascale == 0.0) {
+		ow = 0.0;
+		ox = 0.0;
+		oy = 0.0;
+		oz = 0.0;
+		return;
+	}
+
+	const double saw = aw / ascale;
+	const double sax = ax / ascale;
+	const double say = ay / ascale;
+	const double saz = az / ascale;
+	const double sbw = bw / bscale;
+	const double sbx = bx / bscale;
+	const double sby = by / bscale;
+	const double sbz = bz / bscale;
+
+	const double dot = saw * sbw + sax * sbx + say * sby + saz * sbz;
+	const double bn2 = sbw * sbw + sbx * sbx + sby * sby + sbz * sbz;
+	const double s = dot / bn2;
+	ow = ascale * sbw * s;
+	ox = ascale * sbx * s;
+	oy = ascale * sby * s;
+	oz = ascale * sbz * s;
+}
+
+static inline void Projection3(double ax, double ay, double az, double bx, double by, double bz, double &ox,
+                               double &oy, double &oz) {
+	const double bn2 = bx * bx + by * by + bz * bz;
+	const double dot = ax * bx + ay * by + az * bz;
+	const double s = dot / bn2;
+	ox = bx * s;
+	oy = by * s;
+	oz = bz * s;
+
+	if (bn2 >= DBL_MIN_NORMAL && std::isfinite(bn2) && std::isfinite(dot) && std::isfinite(s)) {
+		return;
+	}
+	if (!AllFinite3(ax, ay, az) || !AllFinite3(bx, by, bz)) {
+		return;
+	}
+
+	const double bscale = MaxAbs3(bx, by, bz);
+	if (bscale == 0.0) {
+		return;
+	}
+	const double ascale = MaxAbs3(ax, ay, az);
+	ScaledProjection3(ax, ay, az, bx, by, bz, ascale, bscale, ox, oy, oz);
+}
+
+static inline void Projection4(double aw, double ax, double ay, double az, double bw, double bx, double by, double bz,
+                               double &ow, double &ox, double &oy, double &oz) {
+	const double bn2 = bw * bw + bx * bx + by * by + bz * bz;
+	const double dot = aw * bw + ax * bx + ay * by + az * bz;
+	const double s = dot / bn2;
+	ow = bw * s;
+	ox = bx * s;
+	oy = by * s;
+	oz = bz * s;
+
+	if (bn2 >= DBL_MIN_NORMAL && std::isfinite(bn2) && std::isfinite(dot) && std::isfinite(s)) {
+		return;
+	}
+	if (!AllFinite4(aw, ax, ay, az) || !AllFinite4(bw, bx, by, bz)) {
+		return;
+	}
+
+	const double bscale = MaxAbs4(bw, bx, by, bz);
+	if (bscale == 0.0) {
+		return;
+	}
+	const double ascale = MaxAbs4(aw, ax, ay, az);
+	ScaledProjection4(aw, ax, ay, az, bw, bx, by, bz, ascale, bscale, ow, ox, oy, oz);
 }
 
 // ------------------------- Output writers -------------------------
@@ -768,30 +1024,82 @@ static void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 }
 
 // vnorm(vec3) -> DOUBLE
-static void VNormVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VNorm2Vec3Fn(input, state, result);
+static void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, ax_uf);
+	a[1]->ToUnifiedFormat(n, ay_uf);
+	a[2]->ToUnifiedFormat(n, az_uf);
+
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
+
+	const bool all_valid =
+	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
 	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
-			continue;
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
 		}
-		out[i] = std::sqrt(out[i]);
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		out[i] = Norm3(x, y, z);
 	}
 }
 
 // vnorm(vec4) -> DOUBLE
-static void VNormVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VNorm2Vec4Fn(input, state, result);
+static void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+
+	auto &a_v = input.data[0];
+	auto &a = StructVector::GetEntries(a_v);
+
+	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
+	a_v.ToUnifiedFormat(n, a_uf);
+	a[0]->ToUnifiedFormat(n, aw_uf);
+	a[1]->ToUnifiedFormat(n, ax_uf);
+	a[2]->ToUnifiedFormat(n, ay_uf);
+	a[3]->ToUnifiedFormat(n, az_uf);
+
+	auto *aw = (const double *)aw_uf.data;
+	auto *ax = (const double *)ax_uf.data;
+	auto *ay = (const double *)ay_uf.data;
+	auto *az = (const double *)az_uf.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto *out = FlatVector::GetData<double>(result);
 	auto &out_validity = FlatVector::Validity(result);
+
+	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
+	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+
 	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
-			continue;
+		if (!all_valid) {
+			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
+			    !RowIsValid(az_uf, i)) {
+				out_validity.SetInvalid(i);
+				continue;
+			}
 		}
-		out[i] = std::sqrt(out[i]);
+		const double w = aw[aw_uf.sel->get_index(i)];
+		const double x = ax[ax_uf.sel->get_index(i)];
+		const double y = ay[ay_uf.sel->get_index(i)];
+		const double z = az[az_uf.sel->get_index(i)];
+		out[i] = Norm4(w, x, y, z);
 	}
 }
 
@@ -829,11 +1137,7 @@ static void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result
 		const double x = ax[ax_uf.sel->get_index(i)];
 		const double y = ay[ay_uf.sel->get_index(i)];
 		const double z = az[az_uf.sel->get_index(i)];
-		const double n2 = x * x + y * y + z * z;
-		const double inv_n = 1.0 / std::sqrt(n2);
-		ox[i] = x * inv_n;
-		oy[i] = y * inv_n;
-		oz[i] = z * inv_n;
+		Normalize3(x, y, z, ox[i], oy[i], oz[i]);
 	}
 }
 
@@ -875,12 +1179,7 @@ static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result
 		const double x = ax[ax_uf.sel->get_index(i)];
 		const double y = ay[ay_uf.sel->get_index(i)];
 		const double z = az[az_uf.sel->get_index(i)];
-		const double n2 = w * w + x * x + y * y + z * z;
-		const double inv_n = 1.0 / std::sqrt(n2);
-		ow[i] = w * inv_n;
-		ox[i] = x * inv_n;
-		oy[i] = y * inv_n;
-		oz[i] = z * inv_n;
+		Normalize4(w, x, y, z, ow[i], ox[i], oy[i], oz[i]);
 	}
 }
 
@@ -1065,7 +1364,7 @@ static void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &resul
 		if (!out_validity.RowIsValid(i)) {
 			continue;
 		}
-		out[i] = std::acos(out[i]);
+		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
 	}
 }
 
@@ -1079,7 +1378,7 @@ static void VAngleVec4Fn(DataChunk &input, ExpressionState &state, Vector &resul
 		if (!out_validity.RowIsValid(i)) {
 			continue;
 		}
-		out[i] = std::acos(out[i]);
+		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
 	}
 }
 
@@ -1131,11 +1430,7 @@ static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		const double bxv = bx[bx_uf.sel->get_index(i)];
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
-		const double bn2 = bxv * bxv + byv * byv + bzv * bzv;
-		const double s = (axv * bxv + ayv * byv + azv * bzv) / bn2;
-		ox[i] = bxv * s;
-		oy[i] = byv * s;
-		oz[i] = bzv * s;
+		Projection3(axv, ayv, azv, bxv, byv, bzv, ox[i], oy[i], oz[i]);
 	}
 }
 
@@ -1195,12 +1490,7 @@ static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		const double bxv = bx[bx_uf.sel->get_index(i)];
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
-		const double bn2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
-		const double s = (awv * bwv + axv * bxv + ayv * byv + azv * bzv) / bn2;
-		ow[i] = bwv * s;
-		ox[i] = bxv * s;
-		oy[i] = byv * s;
-		oz[i] = bzv * s;
+		Projection4(awv, axv, ayv, azv, bwv, bxv, byv, bzv, ow[i], ox[i], oy[i], oz[i]);
 	}
 }
 
@@ -1252,11 +1542,11 @@ static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		const double bxv = bx[bx_uf.sel->get_index(i)];
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
-		const double bn2 = bxv * bxv + byv * byv + bzv * bzv;
-		const double s = (axv * bxv + ayv * byv + azv * bzv) / bn2;
-		ox[i] = axv - bxv * s;
-		oy[i] = ayv - byv * s;
-		oz[i] = azv - bzv * s;
+		double px, py, pz;
+		Projection3(axv, ayv, azv, bxv, byv, bzv, px, py, pz);
+		ox[i] = axv - px;
+		oy[i] = ayv - py;
+		oz[i] = azv - pz;
 	}
 }
 
@@ -1316,12 +1606,12 @@ static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		const double bxv = bx[bx_uf.sel->get_index(i)];
 		const double byv = by[by_uf.sel->get_index(i)];
 		const double bzv = bz[bz_uf.sel->get_index(i)];
-		const double bn2 = bwv * bwv + bxv * bxv + byv * byv + bzv * bzv;
-		const double s = (awv * bwv + axv * bxv + ayv * byv + azv * bzv) / bn2;
-		ow[i] = awv - bwv * s;
-		ox[i] = axv - bxv * s;
-		oy[i] = ayv - byv * s;
-		oz[i] = azv - bzv * s;
+		double pw, px, py, pz;
+		Projection4(awv, axv, ayv, azv, bwv, bxv, byv, bzv, pw, px, py, pz);
+		ow[i] = awv - pw;
+		ox[i] = axv - px;
+		oy[i] = ayv - py;
+		oz[i] = azv - pz;
 	}
 }
 

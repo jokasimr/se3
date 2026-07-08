@@ -1425,6 +1425,22 @@ SELECT
 ----
 true
 
+# se3_inv(W) avoids intermediate overflow for extreme finite translations
+query I
+WITH w AS (
+  SELECT se3_inv(se3_make(vvec(1e308, 0.0, 0.0), vvec(0.0, 0.0, 0.0, 1.0))) AS inv_w
+)
+SELECT
+  NOT isinf(inv_w.t.x) AND NOT isnan(inv_w.t.x)
+  AND NOT isinf(inv_w.t.y) AND NOT isnan(inv_w.t.y)
+  AND NOT isinf(inv_w.t.z) AND NOT isnan(inv_w.t.z)
+  AND abs(inv_w.t.x / 1e308 - 1.0) < 1e-12
+  AND abs(inv_w.t.y / 1e308) < 1e-12
+  AND abs(inv_w.t.z / 1e308) < 1e-12
+FROM w;
+----
+true
+
 # se3_inv null propagation
 query I
 SELECT se3_inv(CAST(NULL AS STRUCT(x DOUBLE, y DOUBLE, z DOUBLE))) IS NULL;
@@ -1501,6 +1517,194 @@ SELECT
   )).z, 6);
 ----
 0.0	1.0	0.0
+
+# se3_apply(quat, vec3) avoids intermediate overflow for extreme finite vectors
+query I
+WITH rotated AS (
+  SELECT
+    se3_apply(vvec(0.0, 0.0, 0.0, 1.0), vvec(1e308, 0.0, 0.0)) AS exact_pi,
+    se3_apply(quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()), vvec(1e308, 0.0, 0.0)) AS axis_pi,
+    se3_apply(vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5)), vvec(1.7e308, 0.0, 0.0)) AS quarter_turn
+)
+SELECT
+  NOT isinf(exact_pi.x) AND NOT isnan(exact_pi.x)
+  AND NOT isinf(exact_pi.y) AND NOT isnan(exact_pi.y)
+  AND NOT isinf(exact_pi.z) AND NOT isnan(exact_pi.z)
+  AND abs(exact_pi.x / 1e308 + 1.0) < 1e-12
+  AND abs(exact_pi.y / 1e308) < 1e-12
+  AND abs(exact_pi.z / 1e308) < 1e-12
+  AND NOT isinf(axis_pi.x) AND NOT isnan(axis_pi.x)
+  AND NOT isinf(axis_pi.y) AND NOT isnan(axis_pi.y)
+  AND NOT isinf(axis_pi.z) AND NOT isnan(axis_pi.z)
+  AND abs(axis_pi.x / 1e308 + 1.0) < 1e-12
+  AND abs(axis_pi.y / 1e308) < 1e-12
+  AND abs(axis_pi.z / 1e308) < 1e-12
+  AND NOT isinf(quarter_turn.x) AND NOT isnan(quarter_turn.x)
+  AND NOT isinf(quarter_turn.y) AND NOT isnan(quarter_turn.y)
+  AND NOT isinf(quarter_turn.z) AND NOT isnan(quarter_turn.z)
+  AND abs(quarter_turn.x / 1.7e308) < 1e-12
+  AND abs(quarter_turn.y / 1.7e308 - 1.0) < 1e-12
+  AND abs(quarter_turn.z / 1.7e308) < 1e-12
+FROM rotated;
+----
+true
+
+# se3_apply(W, vec3) avoids intermediate overflow for extreme finite vectors
+query I
+WITH rotated AS (
+  SELECT
+    se3_apply(se3_make(vvec(0.0, 0.0, 0.0), vvec(0.0, 0.0, 0.0, 1.0)), vvec(1e308, 0.0, 0.0)) AS exact_pi,
+    se3_apply(se3_make(vvec(0.0, 0.0, 0.0), vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5))), vvec(1.7e308, 0.0, 0.0)) AS quarter_turn
+)
+SELECT
+  NOT isinf(exact_pi.x) AND NOT isnan(exact_pi.x)
+  AND NOT isinf(exact_pi.y) AND NOT isnan(exact_pi.y)
+  AND NOT isinf(exact_pi.z) AND NOT isnan(exact_pi.z)
+  AND abs(exact_pi.x / 1e308 + 1.0) < 1e-12
+  AND abs(exact_pi.y / 1e308) < 1e-12
+  AND abs(exact_pi.z / 1e308) < 1e-12
+  AND NOT isinf(quarter_turn.x) AND NOT isnan(quarter_turn.x)
+  AND NOT isinf(quarter_turn.y) AND NOT isnan(quarter_turn.y)
+  AND NOT isinf(quarter_turn.z) AND NOT isnan(quarter_turn.z)
+  AND abs(quarter_turn.x / 1.7e308) < 1e-12
+  AND abs(quarter_turn.y / 1.7e308 - 1.0) < 1e-12
+  AND abs(quarter_turn.z / 1.7e308) < 1e-12
+FROM rotated;
+----
+true
+
+# se3_compose overloads using inverse rotation avoid intermediate overflow
+query I
+WITH composed AS (
+  SELECT
+    se3_compose(vvec(1e308, 0.0, 0.0), vvec(0.0, 0.0, 0.0, 1.0)) AS tq,
+    se3_compose(se3_make(vvec(1e308, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)), vvec(0.0, 0.0, 0.0, 1.0)) AS wq,
+    se3_compose(se3_make(vvec(1e308, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)), se3_make(vvec(0.0, 0.0, 0.0), vvec(0.0, 0.0, 0.0, 1.0))) AS ww,
+    se3_compose(vvec(1e308, 0.0, 0.0), se3_make(vvec(0.0, 0.0, 0.0), vvec(0.0, 0.0, 0.0, 1.0))) AS tw
+)
+SELECT
+  NOT isinf(tq.t.x) AND NOT isnan(tq.t.x)
+  AND NOT isinf(tq.t.y) AND NOT isnan(tq.t.y)
+  AND NOT isinf(tq.t.z) AND NOT isnan(tq.t.z)
+  AND abs(tq.t.x / 1e308 + 1.0) < 1e-12
+  AND abs(tq.t.y / 1e308) < 1e-12
+  AND abs(tq.t.z / 1e308) < 1e-12
+  AND NOT isinf(wq.t.x) AND NOT isnan(wq.t.x)
+  AND NOT isinf(wq.t.y) AND NOT isnan(wq.t.y)
+  AND NOT isinf(wq.t.z) AND NOT isnan(wq.t.z)
+  AND NOT isinf(ww.t.x) AND NOT isnan(ww.t.x)
+  AND NOT isinf(ww.t.y) AND NOT isnan(ww.t.y)
+  AND NOT isinf(ww.t.z) AND NOT isnan(ww.t.z)
+  AND NOT isinf(tw.t.x) AND NOT isnan(tw.t.x)
+  AND NOT isinf(tw.t.y) AND NOT isnan(tw.t.y)
+  AND NOT isinf(tw.t.z) AND NOT isnan(tw.t.z)
+  AND abs(wq.t.x / 1e308 + 1.0) < 1e-12
+  AND abs(wq.t.y / 1e308) < 1e-12
+  AND abs(wq.t.z / 1e308) < 1e-12
+  AND abs(ww.t.x / 1e308 + 1.0) < 1e-12
+  AND abs(ww.t.y / 1e308) < 1e-12
+  AND abs(ww.t.z / 1e308) < 1e-12
+  AND abs(tw.t.x / 1e308 + 1.0) < 1e-12
+  AND abs(tw.t.y / 1e308) < 1e-12
+  AND abs(tw.t.z / 1e308) < 1e-12
+FROM composed;
+----
+true
+
+# se3_compose overloads using inverse rotation handle extreme finite quarter turns
+query I
+WITH composed AS (
+  SELECT
+    se3_compose(vvec(1.7e308, 0.0, 0.0), vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5))) AS tq,
+    se3_compose(se3_make(vvec(1.7e308, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)), vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5))) AS wq,
+    se3_compose(se3_make(vvec(1.7e308, 0.0, 0.0), vvec(1.0, 0.0, 0.0, 0.0)), se3_make(vvec(0.0, 0.0, 0.0), vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5)))) AS ww,
+    se3_compose(vvec(1.7e308, 0.0, 0.0), se3_make(vvec(0.0, 0.0, 0.0), vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5)))) AS tw
+)
+SELECT
+  NOT isinf(tq.t.x) AND NOT isnan(tq.t.x)
+  AND NOT isinf(tq.t.y) AND NOT isnan(tq.t.y)
+  AND NOT isinf(tq.t.z) AND NOT isnan(tq.t.z)
+  AND NOT isinf(wq.t.x) AND NOT isnan(wq.t.x)
+  AND NOT isinf(wq.t.y) AND NOT isnan(wq.t.y)
+  AND NOT isinf(wq.t.z) AND NOT isnan(wq.t.z)
+  AND NOT isinf(ww.t.x) AND NOT isnan(ww.t.x)
+  AND NOT isinf(ww.t.y) AND NOT isnan(ww.t.y)
+  AND NOT isinf(ww.t.z) AND NOT isnan(ww.t.z)
+  AND NOT isinf(tw.t.x) AND NOT isnan(tw.t.x)
+  AND NOT isinf(tw.t.y) AND NOT isnan(tw.t.y)
+  AND NOT isinf(tw.t.z) AND NOT isnan(tw.t.z)
+  AND abs(tq.t.x / 1.7e308) < 1e-12
+  AND abs(tq.t.y / 1.7e308 + 1.0) < 1e-12
+  AND abs(tq.t.z / 1.7e308) < 1e-12
+  AND abs(wq.t.x / 1.7e308) < 1e-12
+  AND abs(wq.t.y / 1.7e308 + 1.0) < 1e-12
+  AND abs(wq.t.z / 1.7e308) < 1e-12
+  AND abs(ww.t.x / 1.7e308) < 1e-12
+  AND abs(ww.t.y / 1.7e308 + 1.0) < 1e-12
+  AND abs(ww.t.z / 1.7e308) < 1e-12
+  AND abs(tw.t.x / 1.7e308) < 1e-12
+  AND abs(tw.t.y / 1.7e308 + 1.0) < 1e-12
+  AND abs(tw.t.z / 1.7e308) < 1e-12
+FROM composed;
+----
+true
+
+# qrotate returns floating-point overflow when the true rotated component overflows
+query I
+WITH rotated AS (
+  SELECT se3_apply(quat_from_axis_angle(vvec(0.0, 0.0, 1.0), pi()/4.0), vvec(1.7e308, 1.7e308, 0.0)) AS p
+)
+SELECT
+  NOT isinf(p.x) AND NOT isnan(p.x)
+  AND abs(p.x / 1.7e308) < 1e-12
+  AND isinf(p.y) AND p.y > 0.0
+  AND NOT isinf(p.z) AND NOT isnan(p.z)
+  AND p.z = 0.0
+FROM rotated;
+----
+true
+
+# qrotate keeps non-finite inputs on the fast floating-point path
+query I
+WITH rotated AS (
+  SELECT
+    se3_apply(vvec(0.0, 0.0, 0.0, 1.0), vvec('inf'::DOUBLE, 0.0, 0.0)) AS inf_pi,
+    se3_apply(vvec(0.0, 0.0, 0.0, 1.0), vvec('nan'::DOUBLE, 0.0, 0.0)) AS nan_pi
+)
+SELECT
+  isnan(inf_pi.x) AND isnan(inf_pi.y) AND isnan(inf_pi.z)
+  AND isnan(nan_pi.x) AND isnan(nan_pi.y) AND isnan(nan_pi.z)
+FROM rotated;
+----
+true
+
+# qrotate handles tiny and subnormal finite vectors
+query I
+WITH rotated AS (
+  SELECT
+    se3_apply(vvec(0.0, 0.0, 0.0, 1.0), vvec(1e-308, 0.0, 0.0)) AS tiny_pi,
+    se3_apply(vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5)), vvec(1e-308, 0.0, 0.0)) AS tiny_quarter_turn,
+    se3_apply(vvec(0.0, 0.0, 0.0, 1.0), vvec(5e-324, 0.0, 0.0)) AS min_subnormal_pi,
+    se3_apply(vvec(sqrt(0.5), 0.0, 0.0, sqrt(0.5)), vvec(5e-324, 0.0, 0.0)) AS min_subnormal_quarter_turn
+)
+SELECT
+  NOT isinf(tiny_pi.x) AND NOT isnan(tiny_pi.x)
+  AND NOT isinf(tiny_quarter_turn.x) AND NOT isnan(tiny_quarter_turn.x)
+  AND abs(tiny_pi.x / 1e-308 + 1.0) < 1e-12
+  AND abs(tiny_pi.y / 1e-308) < 1e-12
+  AND abs(tiny_pi.z / 1e-308) < 1e-12
+  AND abs(tiny_quarter_turn.x / 1e-308) < 1e-12
+  AND abs(tiny_quarter_turn.y / 1e-308 - 1.0) < 1e-12
+  AND abs(tiny_quarter_turn.z / 1e-308) < 1e-12
+  AND min_subnormal_pi.x = -5e-324
+  AND min_subnormal_pi.y = 0.0
+  AND min_subnormal_pi.z = 0.0
+  AND min_subnormal_quarter_turn.x = 0.0
+  AND min_subnormal_quarter_turn.y = 5e-324
+  AND min_subnormal_quarter_turn.z = 0.0
+FROM rotated;
+----
+true
 
 # se3_apply null propagation for vec3/quat overloads
 query I
@@ -1609,19 +1813,78 @@ SELECT isnan((vnormalize(vvec(0.0, 0.0, 0.0))).x);
 true
 
 query I
-SELECT isinf((vnormalize(vvec(1e-300, 0.0, 0.0))).x);
-----
-true
-
-query I
-SELECT (vnormalize(vvec(1e308, 0.0, 0.0))).x = 0.0;
-----
-true
-
-query I
 SELECT isnan((vnormalize(vvec(0.0, 0.0, 0.0, 0.0))).w);
 ----
 true
+
+query IIIIIIIIIIII
+SELECT
+  abs(vnorm(vvec(1e308, 0.0, 0.0)) / 1e308 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e308, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-300, 0.0, 0.0)) / 1e-300 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-300, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-320, 0.0, 0.0)) / 1e-320 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-320, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e308, 0.0, 0.0, 0.0)) / 1e308 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e308, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-300, 0.0, 0.0, 0.0)) / 1e-300 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-300, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-320, 0.0, 0.0, 0.0)) / 1e-320 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-320, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12;
+----
+true	true	true	true	true	true	true	true	true	true	true	true
+
+query IIII
+SELECT
+  abs(vnorm(vvec(1e308, 1e308, 0.0)) / 1e308 - sqrt(2.0)) < 1e-12,
+  abs((vnormalize(vvec(1e308, 1e308, 0.0))).x - 1.0 / sqrt(2.0)) < 1e-12,
+  abs(vnorm(vvec(1e308, 1e308, 0.0, 0.0)) / 1e308 - sqrt(2.0)) < 1e-12,
+  abs((vnormalize(vvec(1e308, 1e308, 0.0, 0.0))).w - 1.0 / sqrt(2.0)) < 1e-12;
+----
+true	true	true	true
+
+query IIIIIIII
+SELECT
+  abs(vnorm(vvec(1e-160, 0.0, 0.0)) / 1e-160 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-160, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-160, 1e-160, 0.0)) / (sqrt(2.0) * 1e-160) - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-160, 1e-160, 0.0))).x - 1.0 / sqrt(2.0)) < 1e-12,
+  abs(vnorm(vvec(1e-160, 0.0, 0.0, 0.0)) / 1e-160 - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-160, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12,
+  abs(vnorm(vvec(1e-160, 1e-160, 0.0, 0.0)) / (sqrt(2.0) * 1e-160) - 1.0) < 1e-12,
+  abs((vnormalize(vvec(1e-160, 1e-160, 0.0, 0.0))).w - 1.0 / sqrt(2.0)) < 1e-12;
+----
+true	true	true	true	true	true	true	true
+
+query III
+SELECT
+  isinf(vnorm(vvec(1e308, 1e308, 1e308, 1e308))),
+  abs((vnormalize(vvec(1e308, 1e308, 1e308))).x - 1.0 / sqrt(3.0)) < 1e-12,
+  abs((vnormalize(vvec(1e308, 1e308, 1e308, 1e308))).w - 0.5) < 1e-12;
+----
+true	true	true
+
+query IIII
+SELECT
+  abs((vnormalize(vvec(-1e308, 0.0, 0.0))).x + 1.0) < 1e-12,
+  abs((vnormalize(vvec(-1e-320, 0.0, 0.0))).x + 1.0) < 1e-12,
+  abs((vnormalize(vvec(-1e308, 0.0, 0.0, 0.0))).w + 1.0) < 1e-12,
+  abs((vnormalize(vvec(-1e-320, 0.0, 0.0, 0.0))).w + 1.0) < 1e-12;
+----
+true	true	true	true
+
+query IIIIIIII
+SELECT
+  isinf(vnorm(vvec('inf'::DOUBLE, 0.0, 0.0))),
+  isinf(vnorm(vvec('inf'::DOUBLE, 0.0, 0.0, 0.0))),
+  isnan(vnorm(vvec('nan'::DOUBLE, 0.0, 0.0))),
+  isnan(vnorm(vvec('nan'::DOUBLE, 0.0, 0.0, 0.0))),
+  isnan((vnormalize(vvec('inf'::DOUBLE, 0.0, 0.0))).x),
+  isnan((vnormalize(vvec('inf'::DOUBLE, 0.0, 0.0, 0.0))).w),
+  isnan((vnormalize(vvec('nan'::DOUBLE, 0.0, 0.0))).x),
+  isnan((vnormalize(vvec('nan'::DOUBLE, 0.0, 0.0, 0.0))).w);
+----
+true	true	true	true	true	true	true	true
 
 query I
 SELECT isnan(vcos_angle(vvec(0.0, 0.0, 0.0), vvec(1.0, 0.0, 0.0)));
@@ -1639,6 +1902,46 @@ query I
 SELECT isnan((vproj(vvec(1.0, 2.0, 3.0), vvec(0.0, 0.0, 0.0))).x);
 ----
 true
+
+# vproj/vrej should avoid intermediate overflow/underflow for finite non-zero projection axes
+query IIIIIIIIIIII
+SELECT
+  abs((vproj(vvec(1e200, 0.0, 0.0), vvec(1e200, 0.0, 0.0))).x / 1e200 - 1.0) < 1e-12,
+  abs((vrej(vvec(1e200, 0.0, 0.0), vvec(1e200, 0.0, 0.0))).x) < 1e-12,
+  abs((vproj(vvec(1e-200, 0.0, 0.0), vvec(1e-200, 0.0, 0.0))).x / 1e-200 - 1.0) < 1e-12,
+  abs((vrej(vvec(1e-200, 1.0, 0.0), vvec(1e-200, 0.0, 0.0))).y - 1.0) < 1e-12,
+  abs((vproj(vvec(1.0, 0.0, 0.0), vvec(1e200, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs((vproj(vvec(0.0, 1.0, 0.0), vvec(1e-200, 0.0, 0.0))).x) < 1e-12,
+  abs((vproj(vvec(1e200, 0.0, 0.0, 0.0), vvec(1e200, 0.0, 0.0, 0.0))).w / 1e200 - 1.0) < 1e-12,
+  abs((vrej(vvec(1e200, 0.0, 0.0, 0.0), vvec(1e200, 0.0, 0.0, 0.0))).w) < 1e-12,
+  abs((vproj(vvec(1e-200, 0.0, 0.0, 0.0), vvec(1e-200, 0.0, 0.0, 0.0))).w / 1e-200 - 1.0) < 1e-12,
+  abs((vrej(vvec(1e-200, 1.0, 0.0, 0.0), vvec(1e-200, 0.0, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs((vproj(vvec(1.0, 0.0, 0.0, 0.0), vvec(1e200, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12,
+  abs((vproj(vvec(0.0, 1.0, 0.0, 0.0), vvec(1e-200, 0.0, 0.0, 0.0))).w) < 1e-12;
+----
+true	true	true	true	true	true	true	true	true	true	true	true
+
+query IIIIII
+SELECT
+  abs((vproj(vvec(1.0, 0.0, 0.0), vvec(1e-320, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs((vrej(vvec(1e-320, 1.0, 0.0), vvec(1e-320, 0.0, 0.0))).y - 1.0) < 1e-12,
+  abs((vproj(vvec(0.0, 1.0, 0.0), vvec(1e-320, 0.0, 0.0))).x) < 1e-12,
+  abs((vproj(vvec(1.0, 0.0, 0.0, 0.0), vvec(1e-320, 0.0, 0.0, 0.0))).w - 1.0) < 1e-12,
+  abs((vrej(vvec(1e-320, 1.0, 0.0, 0.0), vvec(1e-320, 0.0, 0.0, 0.0))).x - 1.0) < 1e-12,
+  abs((vproj(vvec(0.0, 1.0, 0.0, 0.0), vvec(1e-320, 0.0, 0.0, 0.0))).w) < 1e-12;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT
+  abs((vproj(vvec(1e308, 1e308, 0.0), vvec(1e200, -1e200, 0.0))).x) < 1e-12,
+  abs((vproj(vvec(1e308, 1e308, 0.0), vvec(1e200, -1e200, 0.0))).y) < 1e-12,
+  abs((vrej(vvec(1e308, 1e308, 0.0), vvec(1e200, -1e200, 0.0))).x / 1e308 - 1.0) < 1e-12,
+  abs((vproj(vvec(1e308, 1e308, 0.0, 0.0), vvec(1e200, -1e200, 0.0, 0.0))).w) < 1e-12,
+  abs((vproj(vvec(1e308, 1e308, 0.0, 0.0), vvec(1e200, -1e200, 0.0, 0.0))).x) < 1e-12,
+  abs((vrej(vvec(1e308, 1e308, 0.0, 0.0), vvec(1e200, -1e200, 0.0, 0.0))).w / 1e308 - 1.0) < 1e-12;
+----
+true	true	true	true	true	true
 
 # vcos_angle/vangle should avoid intermediate overflow/underflow for finite non-zero vectors
 query IIIIIIIIIIII
@@ -1664,6 +1967,24 @@ SELECT
   abs(vangle(vvec(1e200, 0.0, 0.0), vvec(0.0, 1e200, 0.0)) - pi()/2.0) < 1e-12,
   abs(vcos_angle(vvec(1e200, 0.0, 0.0, 0.0), vvec(0.0, 1e200, 0.0, 0.0))) < 1e-12,
   abs(vangle(vvec(1e200, 0.0, 0.0, 0.0), vvec(0.0, 1e200, 0.0, 0.0)) - pi()/2.0) < 1e-12;
+----
+true	true	true	true
+
+# vangle clamps finite cosine roundoff, while vcos_angle remains unclamped
+query IIII
+WITH vals AS (
+  SELECT
+    vvec(3.14162798704748e-138, 2.268453554966467e-138, 2.172250743988824e-138) AS a3,
+    vvec(3.141627987045909e-138, 2.2684535549653328e-138, 2.172250743987738e-138) AS b3,
+    vvec(2.6595387577548104e-143, 3.3902715549111994e-143, 2.31528056255824e-143, 1.3788669018291794e-143) AS a4,
+    vvec(2.65953875775348e-143, 3.3902715549095037e-143, 2.3152805625570823e-143, 1.37886690182849e-143) AS b4
+)
+SELECT
+  vcos_angle(a3, b3) > 1.0 AND abs(vangle(a3, b3)) < 1e-12,
+  vcos_angle(a3, vscale(b3, -1.0)) < -1.0 AND abs(vangle(a3, vscale(b3, -1.0)) - pi()) < 1e-12,
+  vcos_angle(a4, b4) > 1.0 AND abs(vangle(a4, b4)) < 1e-12,
+  vcos_angle(a4, vscale(b4, -1.0)) < -1.0 AND abs(vangle(a4, vscale(b4, -1.0)) - pi()) < 1e-12
+FROM vals;
 ----
 true	true	true	true
 
