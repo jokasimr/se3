@@ -378,8 +378,8 @@ static inline void ScaledProjection4(double aw, double ax, double ay, double az,
 	oz = ascale * sbz * s;
 }
 
-static inline void Projection3(double ax, double ay, double az, double bx, double by, double bz, double &ox,
-                               double &oy, double &oz) {
+static inline void Projection3(double ax, double ay, double az, double bx, double by, double bz, double &ox, double &oy,
+                               double &oz) {
 	const double bn2 = bx * bx + by * by + bz * bz;
 	const double dot = ax * bx + ay * by + az * bz;
 	const double s = dot / bn2;
