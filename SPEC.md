@@ -115,10 +115,9 @@ Mixed compose overloads are implemented to preserve this same ordering rule.
 ### Numeric semantics
 
 - Math type is `double` throughout.
-- Vector math functions intentionally use regular floating-point semantics:
-  - No explicit zero-denominator checks in `vnormalize`, `vcos_angle`, `vangle`, `vproj`, `vrej`
-  - These can produce `NaN`/`Inf` for edge inputs
-  - `vcos_angle` is not clamped to `[-1, 1]`
+- Vector math functions follow floating-point semantics and do not add explicit zero-denominator guards.
+- Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
+- `vcos_angle` returns the raw cosine ratio without clamping.
 
 ### Axis-angle normalization
 

@@ -22,15 +22,16 @@ A point is translated by `t` first, then rotated by quaternion `q`. Quaternions 
 ## Behavioral Notes
 
 - Except for `se3_identity()`, all functions propagate `NULL` if any required input or required struct field is `NULL`.
-- Vector math functions intentionally follow regular floating-point semantics and do not add explicit zero-denominator guards.
+- Vector math functions follow floating-point semantics and do not add explicit zero-denominator guards.
+- Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
 - `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
 
 ## Functions
 
 ### `vvec(...) -> ...`
-Overloaded vector constructor.
+Constructs a vector.
 
-Overloads:
+Signatures:
 - `vvec(x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec3`
 - `vvec(w: DOUBLE, x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec4`
 
@@ -38,51 +39,51 @@ Constructs either a `vec3` (`STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`) or a 4D vect
 (`STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`, same layout as `quat`).
 
 ### `vadd(a, b) -> a`
-Overloaded element-wise addition.
+Element-wise addition.
 
-Overloads:
+Signatures:
 - `vadd(a: vec3, b: vec3) -> vec3`
 - `vadd(a: vec4, b: vec4) -> vec4`
 
 ### `vsub(a, b) -> a`
-Overloaded element-wise subtraction (`a - b`).
+Element-wise subtraction (`a - b`).
 
-Overloads:
+Signatures:
 - `vsub(a: vec3, b: vec3) -> vec3`
 - `vsub(a: vec4, b: vec4) -> vec4`
 
 ### `vscale(a, s) -> a`
-Overloaded scalar multiplication (`a * s`).
+Scalar multiplication (`a * s`).
 
-Overloads:
+Signatures:
 - `vscale(a: vec3, s: DOUBLE) -> vec3`
 - `vscale(a: vec4, s: DOUBLE) -> vec4`
 
 ### `vdot(a, b) -> DOUBLE`
-Overloaded dot product.
+Dot product.
 
-Overloads:
+Signatures:
 - `vdot(a: vec3, b: vec3) -> DOUBLE`
 - `vdot(a: vec4, b: vec4) -> DOUBLE`
 
 ### `vnorm2(a) -> DOUBLE`
-Overloaded squared Euclidean norm.
+Squared Euclidean norm.
 
-Overloads:
+Signatures:
 - `vnorm2(a: vec3) -> DOUBLE`
 - `vnorm2(a: vec4) -> DOUBLE`
 
 ### `vnorm(a) -> DOUBLE`
-Overloaded Euclidean norm (`sqrt(vnorm2(a))`).
+Euclidean norm.
 
-Overloads:
+Signatures:
 - `vnorm(a: vec3) -> DOUBLE`
 - `vnorm(a: vec4) -> DOUBLE`
 
 ### `vnormalize(a) -> a`
-Overloaded unit normalization (`a / vnorm(a)`).
+Unit normalization (`a / vnorm(a)`).
 
-Overloads:
+Signatures:
 - `vnormalize(a: vec3) -> vec3`
 - `vnormalize(a: vec4) -> vec4`
 
@@ -90,34 +91,33 @@ Overloads:
 3D cross product (`a × b`).
 
 ### `vcos_angle(a, b) -> DOUBLE`
-Overloaded cosine of the angle between vectors:
+Cosine of the angle between vectors:
 `vdot(a,b) / (vnorm(a) * vnorm(b))`.
 No clamping is applied.
 
-Overloads:
+Signatures:
 - `vcos_angle(a: vec3, b: vec3) -> DOUBLE`
 - `vcos_angle(a: vec4, b: vec4) -> DOUBLE`
 
 ### `vangle(a, b) -> DOUBLE`
-Overloaded angle in radians between vectors (`acos(vcos_angle(a,b))`).
+Angle in radians between vectors.
 
-Overloads:
+Signatures:
 - `vangle(a: vec3, b: vec3) -> DOUBLE`
 - `vangle(a: vec4, b: vec4) -> DOUBLE`
 
 ### `vproj(a, b) -> b`
-Overloaded vector projection of `a` onto `b`:
-`(vdot(a,b) / vnorm2(b)) * b`.
+Vector projection of `a` onto `b`.
 
-Overloads:
+Signatures:
 - `vproj(a: vec3, b: vec3) -> vec3`
 - `vproj(a: vec4, b: vec4) -> vec4`
 
 ### `vrej(a, b) -> a`
-Overloaded vector rejection of `a` from `b`:
+Vector rejection of `a` from `b`:
 `a - vproj(a, b)`.
 
-Overloads:
+Signatures:
 - `vrej(a: vec3, b: vec3) -> vec3`
 - `vrej(a: vec4, b: vec4) -> vec4`
 
@@ -193,17 +193,15 @@ SELECT se3_from_axis_angle(
 ```
 
 ### `se3_apply(x, p) -> vec3`
-Overloaded apply operator.
+Applies a transformation, translation, or rotation to a point.
 
-Overloads:
+Signatures:
 - `se3_apply(W: W, p: vec3) -> vec3`  
   Apply full transform.
 - `se3_apply(t: vec3, p: vec3) -> vec3`  
   Translate: `p + t`.
 - `se3_apply(q: quat, p: vec3) -> vec3`  
   Rotate: `R_q(p)`.
-
-Applies the transform to a point.
 
 Example (rotate + translate):
 ```sql
@@ -228,9 +226,9 @@ SELECT se3_apply(
 ```
 
 ### `se3_inv(x) -> x`
-Overloaded inverse operator.
+Inverse of a translation, rotation, or transform.
 
-Overloads:
+Signatures:
 - `se3_inv(t: vec3) -> vec3`  
   Returns `-t`.
 - `se3_inv(q: quat) -> quat`  
@@ -246,9 +244,9 @@ SELECT se3_inv(se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_p
 ```
 
 ### `se3_compose(A, B) -> ...`
-Overloaded composition operator. **Semantics:** apply `B` first, then `A`.
+Composition operator. **Semantics:** apply `B` first, then `A`.
 
-Overloads:
+Signatures:
 - `se3_compose(W2: W, W1: W) -> W`  
   Composition of transforms.
 - `se3_compose(t2: vec3, t1: vec3) -> vec3`  
