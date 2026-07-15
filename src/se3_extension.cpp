@@ -325,6 +325,24 @@ static inline void Normalize4(double w, double x, double y, double z, double &ow
 	oz = z * inv_n;
 }
 
+static inline bool AxisAngleToQuat(double ax, double ay, double az, double th, double &ow, double &ox, double &oy,
+                                   double &oz) {
+	if (ax == 0.0 && ay == 0.0 && az == 0.0) {
+		return false;
+	}
+
+	double ux, uy, uz;
+	Normalize3(ax, ay, az, ux, uy, uz);
+
+	const double h = 0.5 * th;
+	const double s = std::sin(h);
+	ow = std::cos(h);
+	ox = ux * s;
+	oy = uy * s;
+	oz = uz * s;
+	return true;
+}
+
 static inline void ScaledProjection3(double ax, double ay, double az, double bx, double by, double bz, double ascale,
                                      double bscale, double &ox, double &oy, double &oz) {
 	if (ascale == 0.0) {
@@ -1657,20 +1675,10 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 		const double axv = ax[ax_sel->get_index(i)];
 		const double ayv = ay[ay_sel->get_index(i)];
 		const double azv = az[az_sel->get_index(i)];
-		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
-		if (axis_n == 0.0) {
+		if (!AxisAngleToQuat(axv, ayv, azv, thv, ow[i], ox[i], oy[i], oz[i])) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
-		const double inv_axis_n = 1.0 / axis_n;
-		const double h = 0.5 * thv;
-		const double c = std::cos(h);
-		const double s = std::sin(h);
-
-		ow[i] = c;
-		ox[i] = (axv * inv_axis_n) * s;
-		oy[i] = (ayv * inv_axis_n) * s;
-		oz[i] = (azv * inv_axis_n) * s;
 	}
 }
 
@@ -1980,24 +1988,14 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 		const double axv = ax[ax_sel->get_index(i)];
 		const double ayv = ay[ay_sel->get_index(i)];
 		const double azv = az[az_sel->get_index(i)];
-		const double axis_n = std::hypot(std::hypot(axv, ayv), azv);
-		if (axis_n == 0.0) {
+		if (!AxisAngleToQuat(axv, ayv, azv, thv, oqw[i], oqx[i], oqy[i], oqz[i])) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
-		const double inv_axis_n = 1.0 / axis_n;
-		const double h = 0.5 * thv;
-		const double c = std::cos(h);
-		const double s = std::sin(h);
 
 		otx[i] = itx[itx_sel->get_index(i)];
 		oty[i] = ity[ity_sel->get_index(i)];
 		otz[i] = itz[itz_sel->get_index(i)];
-
-		oqw[i] = c;
-		oqx[i] = (axv * inv_axis_n) * s;
-		oqy[i] = (ayv * inv_axis_n) * s;
-		oqz[i] = (azv * inv_axis_n) * s;
 	}
 }
 

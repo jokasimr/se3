@@ -123,7 +123,6 @@ Mixed compose overloads are implemented to preserve this same ordering rule.
 
 - `quat_from_axis_angle` and `se3_from_axis_angle` normalize the supplied axis internally.
 - If axis norm is zero, output is `NULL`.
-- Axis norm uses a robust nested `hypot` computation (`hypot(hypot(x, y), z)`) to reduce underflow/overflow issues for tiny/huge inputs.
 
 ## Implementation Notes
 

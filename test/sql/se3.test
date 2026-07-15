@@ -464,6 +464,42 @@ SELECT se3_from_axis_angle(struct_pack(x:=1.0, y:=2.0, z:=3.0), struct_pack(x:=1
 ----
 true
 
+# axis-angle constructors normalize subnormal multi-component axes without reciprocal overflow
+query I
+WITH rotations AS (
+  SELECT
+    quat_from_axis_angle(vvec(1e-320, 2e-320, -1e-320), pi()/2.0) AS q,
+    se3_from_axis_angle(vvec(1.0, 2.0, 3.0), vvec(1e-320, 2e-320, -1e-320), pi()/2.0) AS w,
+    quat_from_axis_angle(vvec(1.0, 2.0, -1.0), pi()/2.0) AS expected
+)
+SELECT
+  q IS NOT NULL
+  AND w IS NOT NULL
+  AND abs(qnorm2(q) - 1.0) < 1e-12
+  AND vnorm(vsub(q, expected)) < 1e-12
+  AND vnorm(vsub(w.q, expected)) < 1e-12
+FROM rotations;
+----
+true
+
+# axis-angle constructors normalize axes whose Euclidean norm exceeds the double range
+query I
+WITH rotations AS (
+  SELECT
+    quat_from_axis_angle(vvec(1.7e308, 1.7e308, 0.0), pi()/2.0) AS q,
+    se3_from_axis_angle(vvec(1.0, 2.0, 3.0), vvec(1.7e308, 1.7e308, 0.0), pi()/2.0) AS w,
+    quat_from_axis_angle(vvec(1.0, 1.0, 0.0), pi()/2.0) AS expected
+)
+SELECT
+  q IS NOT NULL
+  AND w IS NOT NULL
+  AND abs(qnorm2(q) - 1.0) < 1e-12
+  AND vnorm(vsub(q, expected)) < 1e-12
+  AND vnorm(vsub(w.q, expected)) < 1e-12
+FROM rotations;
+----
+true
+
 # se3_make with identity rotation is pure translation
 query III
 SELECT
