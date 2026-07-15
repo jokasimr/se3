@@ -2006,7 +2006,7 @@ SELECT
 ----
 true	true	true	true
 
-# vangle clamps finite cosine roundoff, while vcos_angle remains unclamped
+# vangle clamps finite cosine roundoff near +/-1
 query IIII
 WITH vals AS (
   SELECT
@@ -2016,10 +2016,10 @@ WITH vals AS (
     vvec(2.65953875775348e-143, 3.3902715549095037e-143, 2.3152805625570823e-143, 1.37886690182849e-143) AS b4
 )
 SELECT
-  vcos_angle(a3, b3) > 1.0 AND abs(vangle(a3, b3)) < 1e-12,
-  vcos_angle(a3, vscale(b3, -1.0)) < -1.0 AND abs(vangle(a3, vscale(b3, -1.0)) - pi()) < 1e-12,
-  vcos_angle(a4, b4) > 1.0 AND abs(vangle(a4, b4)) < 1e-12,
-  vcos_angle(a4, vscale(b4, -1.0)) < -1.0 AND abs(vangle(a4, vscale(b4, -1.0)) - pi()) < 1e-12
+  abs(vcos_angle(a3, b3) - 1.0) < 1e-12 AND abs(vangle(a3, b3)) < 1e-12,
+  abs(vcos_angle(a3, vscale(b3, -1.0)) + 1.0) < 1e-12 AND abs(vangle(a3, vscale(b3, -1.0)) - pi()) < 1e-12,
+  abs(vcos_angle(a4, b4) - 1.0) < 1e-12 AND abs(vangle(a4, b4)) < 1e-12,
+  abs(vcos_angle(a4, vscale(b4, -1.0)) + 1.0) < 1e-12 AND abs(vangle(a4, vscale(b4, -1.0)) - pi()) < 1e-12
 FROM vals;
 ----
 true	true	true	true
