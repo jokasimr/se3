@@ -3,6 +3,8 @@
 #include "se3_extension.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
@@ -13,7 +15,7 @@ namespace duckdb {
 
 // ------------------------- Types -------------------------
 static LogicalType Vec3Type() {
-	vector<pair<string, LogicalType>> f;
+	child_list_t<LogicalType> f;
 	f.emplace_back("x", LogicalType::DOUBLE);
 	f.emplace_back("y", LogicalType::DOUBLE);
 	f.emplace_back("z", LogicalType::DOUBLE);
@@ -21,7 +23,7 @@ static LogicalType Vec3Type() {
 }
 
 static LogicalType QuatType() {
-	vector<pair<string, LogicalType>> f;
+	child_list_t<LogicalType> f;
 	f.emplace_back("w", LogicalType::DOUBLE);
 	f.emplace_back("x", LogicalType::DOUBLE);
 	f.emplace_back("y", LogicalType::DOUBLE);
@@ -30,7 +32,7 @@ static LogicalType QuatType() {
 }
 
 static LogicalType WType() {
-	vector<pair<string, LogicalType>> f;
+	child_list_t<LogicalType> f;
 	f.emplace_back("t", Vec3Type());
 	f.emplace_back("q", QuatType());
 	return LogicalType::STRUCT(f);
@@ -48,10 +50,22 @@ static FunctionDescription FunctionMeta(vector<string> parameter_names, string d
 	return result;
 }
 
-static void RegisterScalarFunctions(ExtensionLoader &loader, string name, vector<ScalarFunction> functions,
+static void RegisterScalarFunctions(ExtensionLoader &loader, Identifier name, vector<ScalarFunction> functions,
                                     vector<FunctionDescription> descriptions) {
 	ScalarFunctionSet set(std::move(name));
-	for (auto &function : functions) {
+	if (descriptions.size() != 1 && descriptions.size() != functions.size()) {
+		throw InternalException("Expected one function description or one per overload");
+	}
+	for (idx_t function_idx = 0; function_idx < functions.size(); function_idx++) {
+		auto &function = functions[function_idx];
+		auto &description = descriptions[descriptions.size() == 1 ? 0 : function_idx];
+		auto &signature = function.GetSignature();
+		if (signature.GetParameterCount() != description.parameter_names.size()) {
+			throw InternalException("Function description has the wrong number of parameter names");
+		}
+		for (idx_t parameter_idx = 0; parameter_idx < signature.GetParameterCount(); parameter_idx++) {
+			signature.GetParameter(parameter_idx).SetName(Identifier(description.parameter_names[parameter_idx]));
+		}
 		set.AddFunction(std::move(function));
 	}
 
@@ -446,57 +460,58 @@ static inline void Projection4(double aw, double ax, double ay, double az, doubl
 }
 
 // ------------------------- Output writers -------------------------
-static inline void PrepareStructChildrenFlat(Vector &struct_vec) {
+static inline void PrepareStructChildrenFlat(Vector &struct_vec, idx_t count) {
 	struct_vec.SetVectorType(VectorType::FLAT_VECTOR);
+	FlatVector::SetSize(struct_vec, count);
 	auto &ent = StructVector::GetEntries(struct_vec);
 	for (auto &e : ent) {
-		e->SetVectorType(VectorType::FLAT_VECTOR);
+		e.SetVectorType(VectorType::FLAT_VECTOR);
 	}
 }
 
 // vec3 result: STRUCT(x,y,z)
-static inline void PrepareVec3Out(Vector &result, double *&ox, double *&oy, double *&oz) {
-	PrepareStructChildrenFlat(result);
+static inline void PrepareVec3Out(Vector &result, idx_t count, double *&ox, double *&oy, double *&oz) {
+	PrepareStructChildrenFlat(result, count);
 	auto &ent = StructVector::GetEntries(result);
-	ox = FlatVector::GetData<double>(*ent[0]);
-	oy = FlatVector::GetData<double>(*ent[1]);
-	oz = FlatVector::GetData<double>(*ent[2]);
+	ox = FlatVector::GetDataMutable<double>(ent[0]);
+	oy = FlatVector::GetDataMutable<double>(ent[1]);
+	oz = FlatVector::GetDataMutable<double>(ent[2]);
 }
 
 // quat result: STRUCT(w,x,y,z)
-static inline void PrepareQuatOut(Vector &result, double *&ow, double *&ox, double *&oy, double *&oz) {
-	PrepareStructChildrenFlat(result);
+static inline void PrepareQuatOut(Vector &result, idx_t count, double *&ow, double *&ox, double *&oy, double *&oz) {
+	PrepareStructChildrenFlat(result, count);
 	auto &ent = StructVector::GetEntries(result);
-	ow = FlatVector::GetData<double>(*ent[0]);
-	ox = FlatVector::GetData<double>(*ent[1]);
-	oy = FlatVector::GetData<double>(*ent[2]);
-	oz = FlatVector::GetData<double>(*ent[3]);
+	ow = FlatVector::GetDataMutable<double>(ent[0]);
+	ox = FlatVector::GetDataMutable<double>(ent[1]);
+	oy = FlatVector::GetDataMutable<double>(ent[2]);
+	oz = FlatVector::GetDataMutable<double>(ent[3]);
 }
 
 // W result: STRUCT(t vec3, q quat)
-static inline void PrepareWOut(Vector &result, double *&tx, double *&ty, double *&tz, double *&qw, double *&qx,
-                               double *&qy, double *&qz) {
-	PrepareStructChildrenFlat(result);
+static inline void PrepareWOut(Vector &result, idx_t count, double *&tx, double *&ty, double *&tz, double *&qw,
+                               double *&qx, double *&qy, double *&qz) {
+	PrepareStructChildrenFlat(result, count);
 	auto &went = StructVector::GetEntries(result);
 
 	// t
-	auto &tent = StructVector::GetEntries(*went[0]);
+	auto &tent = StructVector::GetEntries(went[0]);
 	for (auto &e : tent) {
-		e->SetVectorType(VectorType::FLAT_VECTOR);
+		e.SetVectorType(VectorType::FLAT_VECTOR);
 	}
-	tx = FlatVector::GetData<double>(*tent[0]);
-	ty = FlatVector::GetData<double>(*tent[1]);
-	tz = FlatVector::GetData<double>(*tent[2]);
+	tx = FlatVector::GetDataMutable<double>(tent[0]);
+	ty = FlatVector::GetDataMutable<double>(tent[1]);
+	tz = FlatVector::GetDataMutable<double>(tent[2]);
 
 	// q
-	auto &qent = StructVector::GetEntries(*went[1]);
+	auto &qent = StructVector::GetEntries(went[1]);
 	for (auto &e : qent) {
-		e->SetVectorType(VectorType::FLAT_VECTOR);
+		e.SetVectorType(VectorType::FLAT_VECTOR);
 	}
-	qw = FlatVector::GetData<double>(*qent[0]);
-	qx = FlatVector::GetData<double>(*qent[1]);
-	qy = FlatVector::GetData<double>(*qent[2]);
-	qz = FlatVector::GetData<double>(*qent[3]);
+	qw = FlatVector::GetDataMutable<double>(qent[0]);
+	qx = FlatVector::GetDataMutable<double>(qent[1]);
+	qy = FlatVector::GetDataMutable<double>(qent[2]);
+	qz = FlatVector::GetDataMutable<double>(qent[3]);
 }
 
 // ------------------------- Functions -------------------------
@@ -506,18 +521,19 @@ static void Vec3CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
 	UnifiedVectorFormat x_uf, y_uf, z_uf;
-	input.data[0].ToUnifiedFormat(n, x_uf);
-	input.data[1].ToUnifiedFormat(n, y_uf);
-	input.data[2].ToUnifiedFormat(n, z_uf);
+	input.data[0].ToUnifiedFormat(x_uf);
+	input.data[1].ToUnifiedFormat(y_uf);
+	input.data[2].ToUnifiedFormat(z_uf);
 
 	auto *x = (const double *)x_uf.data;
 	auto *y = (const double *)y_uf.data;
 	auto *z = (const double *)z_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
+	const bool all_valid =
+	    x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() && z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -537,10 +553,10 @@ static void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
-	input.data[0].ToUnifiedFormat(n, w_uf);
-	input.data[1].ToUnifiedFormat(n, x_uf);
-	input.data[2].ToUnifiedFormat(n, y_uf);
-	input.data[3].ToUnifiedFormat(n, z_uf);
+	input.data[0].ToUnifiedFormat(w_uf);
+	input.data[1].ToUnifiedFormat(x_uf);
+	input.data[2].ToUnifiedFormat(y_uf);
+	input.data[3].ToUnifiedFormat(z_uf);
 
 	auto *w = (const double *)w_uf.data;
 	auto *x = (const double *)x_uf.data;
@@ -548,10 +564,10 @@ static void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *z = (const double *)z_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid =
-	    w_uf.validity.AllValid() && x_uf.validity.AllValid() && y_uf.validity.AllValid() && z_uf.validity.AllValid();
+	const bool all_valid = w_uf.validity.CannotHaveNull() && x_uf.validity.CannotHaveNull() &&
+	                       y_uf.validity.CannotHaveNull() && z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -577,14 +593,14 @@ static void VAddVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -594,11 +610,12 @@ static void VAddVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -625,16 +642,16 @@ static void VAddVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -646,12 +663,13 @@ static void VAddVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -680,14 +698,14 @@ static void VSubVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -697,11 +715,12 @@ static void VSubVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -728,16 +747,16 @@ static void VSubVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -749,12 +768,13 @@ static void VSubVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -782,11 +802,11 @@ static void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &s_v = input.data[1];
 
 	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf, s_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	s_v.ToUnifiedFormat(n, s_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	s_v.ToUnifiedFormat(s_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -794,10 +814,11 @@ static void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *s = (const double *)s_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() &&
-	                       az_uf.validity.AllValid() && s_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       s_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -823,12 +844,12 @@ static void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &s_v = input.data[1];
 
 	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf, s_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	s_v.ToUnifiedFormat(n, s_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	s_v.ToUnifiedFormat(s_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -837,10 +858,11 @@ static void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *s = (const double *)s_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && s_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && s_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -868,14 +890,14 @@ static void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -885,12 +907,14 @@ static void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -916,16 +940,16 @@ static void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -937,13 +961,15 @@ static void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -969,21 +995,22 @@ static void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
 	auto *az = (const double *)az_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid =
-	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1007,11 +1034,11 @@ static void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1019,11 +1046,13 @@ static void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *az = (const double *)az_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1049,21 +1078,22 @@ static void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
 	auto *az = (const double *)az_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid =
-	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1087,11 +1117,11 @@ static void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1099,11 +1129,13 @@ static void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *az = (const double *)az_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1129,20 +1161,20 @@ static void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
 	auto *az = (const double *)az_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid =
-	    a_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1167,11 +1199,11 @@ static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result
 	auto &a = StructVector::GetEntries(a_v);
 
 	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1179,10 +1211,11 @@ static void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result
 	auto *az = (const double *)az_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && aw_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1211,14 +1244,14 @@ static void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -1228,11 +1261,12 @@ static void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1266,14 +1300,14 @@ static void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result)
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -1283,12 +1317,14 @@ static void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result)
 	auto *bz = (const double *)bz_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1320,16 +1356,16 @@ static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result)
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1341,13 +1377,15 @@ static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result)
 	auto *bz = (const double *)bz_uf.data;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1376,8 +1414,8 @@ static void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result)
 static void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
 	VCosAngleVec3Fn(input, state, result);
 	const idx_t n = input.size();
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 	for (idx_t i = 0; i < n; i++) {
 		if (!out_validity.RowIsValid(i)) {
 			continue;
@@ -1390,8 +1428,8 @@ static void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &resul
 static void VAngleVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
 	VCosAngleVec4Fn(input, state, result);
 	const idx_t n = input.size();
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 	for (idx_t i = 0; i < n; i++) {
 		if (!out_validity.RowIsValid(i)) {
 			continue;
@@ -1410,14 +1448,14 @@ static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -1427,11 +1465,12 @@ static void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1462,16 +1501,16 @@ static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1483,12 +1522,13 @@ static void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1522,14 +1562,14 @@ static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -1539,11 +1579,12 @@ static void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1578,16 +1619,16 @@ static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &b = StructVector::GetEntries(b_v);
 
 	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -1599,12 +1640,13 @@ static void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1642,11 +1684,11 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 	auto &th_v = input.data[1];
 
 	UnifiedVectorFormat axis_uf, ax_uf, ay_uf, az_uf, th_uf;
-	axis_v.ToUnifiedFormat(n, axis_uf);
-	axis_ent[0]->ToUnifiedFormat(n, ax_uf);
-	axis_ent[1]->ToUnifiedFormat(n, ay_uf);
-	axis_ent[2]->ToUnifiedFormat(n, az_uf);
-	th_v.ToUnifiedFormat(n, th_uf);
+	axis_v.ToUnifiedFormat(axis_uf);
+	axis_ent[0].ToUnifiedFormat(ax_uf);
+	axis_ent[1].ToUnifiedFormat(ay_uf);
+	axis_ent[2].ToUnifiedFormat(az_uf);
+	th_v.ToUnifiedFormat(th_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ax_sel = ax_uf.sel;
@@ -1658,10 +1700,11 @@ static void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &res
 	auto *th_sel = th_uf.sel;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = axis_uf.validity.AllValid() && ax_uf.validity.AllValid() && ay_uf.validity.AllValid() &&
-	                       az_uf.validity.AllValid() && th_uf.validity.AllValid();
+	const bool all_valid = axis_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       th_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1695,17 +1738,17 @@ static void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat bw_uf, bx_uf, by_uf, bz_uf;
 	UnifiedVectorFormat a_uf, b_uf;
 
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
 
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *aw_sel = aw_uf.sel;
@@ -1726,12 +1769,13 @@ static void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *bz_sel = bz_uf.sel;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1761,11 +1805,11 @@ static void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
 	UnifiedVectorFormat q_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	q[0]->ToUnifiedFormat(n, w_uf);
-	q[1]->ToUnifiedFormat(n, x_uf);
-	q[2]->ToUnifiedFormat(n, y_uf);
-	q[3]->ToUnifiedFormat(n, z_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	q[0].ToUnifiedFormat(w_uf);
+	q[1].ToUnifiedFormat(x_uf);
+	q[2].ToUnifiedFormat(y_uf);
+	q[3].ToUnifiedFormat(z_uf);
 
 	auto *w = (const double *)w_uf.data;
 	auto *w_sel = w_uf.sel;
@@ -1777,10 +1821,11 @@ static void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *z_sel = z_uf.sel;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
-	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() &&
+	                       x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() &&
+	                       z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1805,11 +1850,11 @@ static void QNorm2Fn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
 	UnifiedVectorFormat q_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	q[0]->ToUnifiedFormat(n, w_uf);
-	q[1]->ToUnifiedFormat(n, x_uf);
-	q[2]->ToUnifiedFormat(n, y_uf);
-	q[3]->ToUnifiedFormat(n, z_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	q[0].ToUnifiedFormat(w_uf);
+	q[1].ToUnifiedFormat(x_uf);
+	q[2].ToUnifiedFormat(y_uf);
+	q[3].ToUnifiedFormat(z_uf);
 
 	auto *w = (const double *)w_uf.data;
 	auto *w_sel = w_uf.sel;
@@ -1821,11 +1866,13 @@ static void QNorm2Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *z_sel = z_uf.sel;
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto *out = FlatVector::GetData<double>(result);
-	auto &out_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, n);
+	auto *out = FlatVector::GetDataMutable<double>(result);
+	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
-	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() &&
+	                       x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() &&
+	                       z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1849,7 +1896,7 @@ static void Se3IdentityFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
 	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
-	PrepareWOut(result, tx, ty, tz, qw, qx, qy, qz);
+	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
 
 	for (idx_t i = 0; i < n; i++) {
 		tx[i] = 0.0;
@@ -1874,16 +1921,16 @@ static void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat t_uf, q_uf;
 
-	t_v.ToUnifiedFormat(n, t_uf);
-	q_v.ToUnifiedFormat(n, q_uf);
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
 
-	q[0]->ToUnifiedFormat(n, qw_uf);
-	q[1]->ToUnifiedFormat(n, qx_uf);
-	q[2]->ToUnifiedFormat(n, qy_uf);
-	q[3]->ToUnifiedFormat(n, qz_uf);
+	q[0].ToUnifiedFormat(qw_uf);
+	q[1].ToUnifiedFormat(qx_uf);
+	q[2].ToUnifiedFormat(qy_uf);
+	q[3].ToUnifiedFormat(qz_uf);
 
 	auto *itx = (const double *)tx_uf.data;
 	auto *itx_sel = tx_uf.sel;
@@ -1902,11 +1949,12 @@ static void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *iqz_sel = qz_uf.sel;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = t_uf.validity.AllValid() && q_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
-	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
-	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid();
+	const bool all_valid =
+	    t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
+	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
+	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -1941,16 +1989,16 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 	UnifiedVectorFormat ax_uf, ay_uf, az_uf, th_uf;
 	UnifiedVectorFormat t_uf, axis_uf;
 
-	t_v.ToUnifiedFormat(n, t_uf);
-	axis_v.ToUnifiedFormat(n, axis_uf);
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	axis_v.ToUnifiedFormat(axis_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
 
-	axis[0]->ToUnifiedFormat(n, ax_uf);
-	axis[1]->ToUnifiedFormat(n, ay_uf);
-	axis[2]->ToUnifiedFormat(n, az_uf);
-	th_v.ToUnifiedFormat(n, th_uf);
+	axis[0].ToUnifiedFormat(ax_uf);
+	axis[1].ToUnifiedFormat(ay_uf);
+	axis[2].ToUnifiedFormat(az_uf);
+	th_v.ToUnifiedFormat(th_uf);
 
 	auto *itx = (const double *)tx_uf.data;
 	auto *itx_sel = tx_uf.sel;
@@ -1969,11 +2017,12 @@ static void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &resu
 	auto *th_sel = th_uf.sel;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = t_uf.validity.AllValid() && axis_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
-	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && th_uf.validity.AllValid();
+	const bool all_valid =
+	    t_uf.validity.CannotHaveNull() && axis_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
+	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	    ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() && th_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2004,9 +2053,9 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
 	auto &w_v = input.data[0];
-	auto &went = StructVector::GetEntries(w_v);      // W: {t,q}
-	auto &tent = StructVector::GetEntries(*went[0]); // t
-	auto &qent = StructVector::GetEntries(*went[1]); // q
+	auto &went = StructVector::GetEntries(w_v);     // W: {t,q}
+	auto &tent = StructVector::GetEntries(went[0]); // t
+	auto &qent = StructVector::GetEntries(went[1]); // q
 	auto &p_v = input.data[1];
 	auto &pent = StructVector::GetEntries(p_v); // p
 
@@ -2015,22 +2064,22 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat px_uf, py_uf, pz_uf;
 	UnifiedVectorFormat w_uf, t_uf, q_uf, p_uf;
 
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, q_uf);
-	p_v.ToUnifiedFormat(n, p_uf);
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(q_uf);
+	p_v.ToUnifiedFormat(p_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
 
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
 
-	pent[0]->ToUnifiedFormat(n, px_uf);
-	pent[1]->ToUnifiedFormat(n, py_uf);
-	pent[2]->ToUnifiedFormat(n, pz_uf);
+	pent[0].ToUnifiedFormat(px_uf);
+	pent[1].ToUnifiedFormat(py_uf);
+	pent[2].ToUnifiedFormat(pz_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *tx_sel = tx_uf.sel;
@@ -2056,13 +2105,14 @@ static void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *pz_sel = pz_uf.sel;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
-	                       p_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
-	                       tz_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
-	                       qy_uf.validity.AllValid() && qz_uf.validity.AllValid() && px_uf.validity.AllValid() &&
-	                       py_uf.validity.AllValid() && pz_uf.validity.AllValid();
+	const bool all_valid =
+	    w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() &&
+	    p_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
+	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && px_uf.validity.CannotHaveNull() &&
+	    py_uf.validity.CannotHaveNull() && pz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2102,15 +2152,15 @@ static void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, px_uf, py_uf, pz_uf;
 	UnifiedVectorFormat t_uf, p_uf;
-	t_v.ToUnifiedFormat(n, t_uf);
-	p_v.ToUnifiedFormat(n, p_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	p_v.ToUnifiedFormat(p_uf);
 
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
-	p[0]->ToUnifiedFormat(n, px_uf);
-	p[1]->ToUnifiedFormat(n, py_uf);
-	p[2]->ToUnifiedFormat(n, pz_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
+	p[0].ToUnifiedFormat(px_uf);
+	p[1].ToUnifiedFormat(py_uf);
+	p[2].ToUnifiedFormat(pz_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *ty = (const double *)ty_uf.data;
@@ -2120,11 +2170,12 @@ static void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *pz = (const double *)pz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = t_uf.validity.AllValid() && p_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
-	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && px_uf.validity.AllValid() &&
-	                       py_uf.validity.AllValid() && pz_uf.validity.AllValid();
+	const bool all_valid = t_uf.validity.CannotHaveNull() && p_uf.validity.CannotHaveNull() &&
+	                       tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
+	                       tz_uf.validity.CannotHaveNull() && px_uf.validity.CannotHaveNull() &&
+	                       py_uf.validity.CannotHaveNull() && pz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2151,16 +2202,16 @@ static void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf, px_uf, py_uf, pz_uf;
 	UnifiedVectorFormat q_uf, p_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	p_v.ToUnifiedFormat(n, p_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	p_v.ToUnifiedFormat(p_uf);
 
-	q[0]->ToUnifiedFormat(n, qw_uf);
-	q[1]->ToUnifiedFormat(n, qx_uf);
-	q[2]->ToUnifiedFormat(n, qy_uf);
-	q[3]->ToUnifiedFormat(n, qz_uf);
-	p[0]->ToUnifiedFormat(n, px_uf);
-	p[1]->ToUnifiedFormat(n, py_uf);
-	p[2]->ToUnifiedFormat(n, pz_uf);
+	q[0].ToUnifiedFormat(qw_uf);
+	q[1].ToUnifiedFormat(qx_uf);
+	q[2].ToUnifiedFormat(qy_uf);
+	q[3].ToUnifiedFormat(qz_uf);
+	p[0].ToUnifiedFormat(px_uf);
+	p[1].ToUnifiedFormat(py_uf);
+	p[2].ToUnifiedFormat(pz_uf);
 
 	auto *qw = (const double *)qw_uf.data;
 	auto *qx = (const double *)qx_uf.data;
@@ -2171,11 +2222,12 @@ static void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *pz = (const double *)pz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = q_uf.validity.AllValid() && p_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
-	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
-	                       px_uf.validity.AllValid() && py_uf.validity.AllValid() && pz_uf.validity.AllValid();
+	const bool all_valid =
+	    q_uf.validity.CannotHaveNull() && p_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
+	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() &&
+	    px_uf.validity.CannotHaveNull() && py_uf.validity.CannotHaveNull() && pz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2206,20 +2258,20 @@ static void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &t = StructVector::GetEntries(t_v);
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, t_uf;
-	t_v.ToUnifiedFormat(n, t_uf);
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *ty = (const double *)ty_uf.data;
 	auto *tz = (const double *)tz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid =
-	    t_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid();
+	const bool all_valid = t_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
+	                       ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2242,11 +2294,11 @@ static void Se3InvQFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto &q = StructVector::GetEntries(q_v);
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf, q_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	q[0]->ToUnifiedFormat(n, w_uf);
-	q[1]->ToUnifiedFormat(n, x_uf);
-	q[2]->ToUnifiedFormat(n, y_uf);
-	q[3]->ToUnifiedFormat(n, z_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	q[0].ToUnifiedFormat(w_uf);
+	q[1].ToUnifiedFormat(x_uf);
+	q[2].ToUnifiedFormat(y_uf);
+	q[3].ToUnifiedFormat(z_uf);
 
 	auto *w = (const double *)w_uf.data;
 	auto *x = (const double *)x_uf.data;
@@ -2254,10 +2306,11 @@ static void Se3InvQFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *z = (const double *)z_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && x_uf.validity.AllValid() &&
-	                       y_uf.validity.AllValid() && z_uf.validity.AllValid();
+	const bool all_valid = q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() &&
+	                       x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() &&
+	                       z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2280,23 +2333,23 @@ static void Se3InvWFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	auto &w_v = input.data[0];
 	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(*went[0]);
-	auto &qent = StructVector::GetEntries(*went[1]);
+	auto &tent = StructVector::GetEntries(went[0]);
+	auto &qent = StructVector::GetEntries(went[1]);
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat w_uf, t_uf, q_uf;
 
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, q_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(q_uf);
 
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *ty = (const double *)ty_uf.data;
@@ -2307,12 +2360,13 @@ static void Se3InvWFn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *qz = (const double *)qz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
-	                       tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid() &&
-	                       qw_uf.validity.AllValid() && qx_uf.validity.AllValid() && qy_uf.validity.AllValid() &&
-	                       qz_uf.validity.AllValid();
+	const bool all_valid = w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() &&
+	                       q_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
+	                       ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() &&
+	                       qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	                       qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2356,37 +2410,37 @@ static void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto &b_v = input.data[1];
 	auto &a_ent = StructVector::GetEntries(a_v);
 	auto &b_ent = StructVector::GetEntries(b_v);
-	auto &at = StructVector::GetEntries(*a_ent[0]);
-	auto &aq = StructVector::GetEntries(*a_ent[1]);
-	auto &bt = StructVector::GetEntries(*b_ent[0]);
-	auto &bq = StructVector::GetEntries(*b_ent[1]);
+	auto &at = StructVector::GetEntries(a_ent[0]);
+	auto &aq = StructVector::GetEntries(a_ent[1]);
+	auto &bt = StructVector::GetEntries(b_ent[0]);
+	auto &bq = StructVector::GetEntries(b_ent[1]);
 
 	UnifiedVectorFormat atx_uf, aty_uf, atz_uf, aqw_uf, aqx_uf, aqy_uf, aqz_uf;
 	UnifiedVectorFormat btx_uf, bty_uf, btz_uf, bqw_uf, bqx_uf, bqy_uf, bqz_uf;
 	UnifiedVectorFormat a_uf, b_uf, at_uf, aq_uf, bt_uf, bq_uf;
 
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a_ent[0]->ToUnifiedFormat(n, at_uf);
-	a_ent[1]->ToUnifiedFormat(n, aq_uf);
-	b_ent[0]->ToUnifiedFormat(n, bt_uf);
-	b_ent[1]->ToUnifiedFormat(n, bq_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a_ent[0].ToUnifiedFormat(at_uf);
+	a_ent[1].ToUnifiedFormat(aq_uf);
+	b_ent[0].ToUnifiedFormat(bt_uf);
+	b_ent[1].ToUnifiedFormat(bq_uf);
 
-	at[0]->ToUnifiedFormat(n, atx_uf);
-	at[1]->ToUnifiedFormat(n, aty_uf);
-	at[2]->ToUnifiedFormat(n, atz_uf);
-	aq[0]->ToUnifiedFormat(n, aqw_uf);
-	aq[1]->ToUnifiedFormat(n, aqx_uf);
-	aq[2]->ToUnifiedFormat(n, aqy_uf);
-	aq[3]->ToUnifiedFormat(n, aqz_uf);
+	at[0].ToUnifiedFormat(atx_uf);
+	at[1].ToUnifiedFormat(aty_uf);
+	at[2].ToUnifiedFormat(atz_uf);
+	aq[0].ToUnifiedFormat(aqw_uf);
+	aq[1].ToUnifiedFormat(aqx_uf);
+	aq[2].ToUnifiedFormat(aqy_uf);
+	aq[3].ToUnifiedFormat(aqz_uf);
 
-	bt[0]->ToUnifiedFormat(n, btx_uf);
-	bt[1]->ToUnifiedFormat(n, bty_uf);
-	bt[2]->ToUnifiedFormat(n, btz_uf);
-	bq[0]->ToUnifiedFormat(n, bqw_uf);
-	bq[1]->ToUnifiedFormat(n, bqx_uf);
-	bq[2]->ToUnifiedFormat(n, bqy_uf);
-	bq[3]->ToUnifiedFormat(n, bqz_uf);
+	bt[0].ToUnifiedFormat(btx_uf);
+	bt[1].ToUnifiedFormat(bty_uf);
+	bt[2].ToUnifiedFormat(btz_uf);
+	bq[0].ToUnifiedFormat(bqw_uf);
+	bq[1].ToUnifiedFormat(bqx_uf);
+	bq[2].ToUnifiedFormat(bqy_uf);
+	bq[3].ToUnifiedFormat(bqz_uf);
 
 	auto *atx = (const double *)atx_uf.data;
 	auto *aty = (const double *)aty_uf.data;
@@ -2405,15 +2459,16 @@ static void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *bqz = (const double *)bqz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && at_uf.validity.AllValid() &&
-	                       aq_uf.validity.AllValid() && bt_uf.validity.AllValid() && bq_uf.validity.AllValid() &&
-	                       atx_uf.validity.AllValid() && aty_uf.validity.AllValid() && atz_uf.validity.AllValid() &&
-	                       aqw_uf.validity.AllValid() && aqx_uf.validity.AllValid() && aqy_uf.validity.AllValid() &&
-	                       aqz_uf.validity.AllValid() && btx_uf.validity.AllValid() && bty_uf.validity.AllValid() &&
-	                       btz_uf.validity.AllValid() && bqw_uf.validity.AllValid() && bqx_uf.validity.AllValid() &&
-	                       bqy_uf.validity.AllValid() && bqz_uf.validity.AllValid();
+	const bool all_valid =
+	    a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() && at_uf.validity.CannotHaveNull() &&
+	    aq_uf.validity.CannotHaveNull() && bt_uf.validity.CannotHaveNull() && bq_uf.validity.CannotHaveNull() &&
+	    atx_uf.validity.CannotHaveNull() && aty_uf.validity.CannotHaveNull() && atz_uf.validity.CannotHaveNull() &&
+	    aqw_uf.validity.CannotHaveNull() && aqx_uf.validity.CannotHaveNull() && aqy_uf.validity.CannotHaveNull() &&
+	    aqz_uf.validity.CannotHaveNull() && btx_uf.validity.CannotHaveNull() && bty_uf.validity.CannotHaveNull() &&
+	    btz_uf.validity.CannotHaveNull() && bqw_uf.validity.CannotHaveNull() && bqx_uf.validity.CannotHaveNull() &&
+	    bqy_uf.validity.CannotHaveNull() && bqz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2472,15 +2527,15 @@ static void Se3ComposeTTFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	UnifiedVectorFormat a_uf, b_uf;
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
 
-	a[0]->ToUnifiedFormat(n, ax_uf);
-	a[1]->ToUnifiedFormat(n, ay_uf);
-	a[2]->ToUnifiedFormat(n, az_uf);
-	b[0]->ToUnifiedFormat(n, bx_uf);
-	b[1]->ToUnifiedFormat(n, by_uf);
-	b[2]->ToUnifiedFormat(n, bz_uf);
+	a[0].ToUnifiedFormat(ax_uf);
+	a[1].ToUnifiedFormat(ay_uf);
+	a[2].ToUnifiedFormat(az_uf);
+	b[0].ToUnifiedFormat(bx_uf);
+	b[1].ToUnifiedFormat(by_uf);
+	b[2].ToUnifiedFormat(bz_uf);
 
 	auto *ax = (const double *)ax_uf.data;
 	auto *ay = (const double *)ay_uf.data;
@@ -2490,11 +2545,12 @@ static void Se3ComposeTTFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ox, *oy, *oz;
-	PrepareVec3Out(result, ox, oy, oz);
+	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && ax_uf.validity.AllValid() &&
-	                       ay_uf.validity.AllValid() && az_uf.validity.AllValid() && bx_uf.validity.AllValid() &&
-	                       by_uf.validity.AllValid() && bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
+	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2523,17 +2579,17 @@ static void Se3ComposeQQFn(DataChunk &input, ExpressionState &, Vector &result) 
 	UnifiedVectorFormat bw_uf, bx_uf, by_uf, bz_uf;
 	UnifiedVectorFormat a_uf, b_uf;
 
-	a_v.ToUnifiedFormat(n, a_uf);
-	b_v.ToUnifiedFormat(n, b_uf);
-	a[0]->ToUnifiedFormat(n, aw_uf);
-	a[1]->ToUnifiedFormat(n, ax_uf);
-	a[2]->ToUnifiedFormat(n, ay_uf);
-	a[3]->ToUnifiedFormat(n, az_uf);
+	a_v.ToUnifiedFormat(a_uf);
+	b_v.ToUnifiedFormat(b_uf);
+	a[0].ToUnifiedFormat(aw_uf);
+	a[1].ToUnifiedFormat(ax_uf);
+	a[2].ToUnifiedFormat(ay_uf);
+	a[3].ToUnifiedFormat(az_uf);
 
-	b[0]->ToUnifiedFormat(n, bw_uf);
-	b[1]->ToUnifiedFormat(n, bx_uf);
-	b[2]->ToUnifiedFormat(n, by_uf);
-	b[3]->ToUnifiedFormat(n, bz_uf);
+	b[0].ToUnifiedFormat(bw_uf);
+	b[1].ToUnifiedFormat(bx_uf);
+	b[2].ToUnifiedFormat(by_uf);
+	b[3].ToUnifiedFormat(bz_uf);
 
 	auto *aw = (const double *)aw_uf.data;
 	auto *ax = (const double *)ax_uf.data;
@@ -2545,12 +2601,13 @@ static void Se3ComposeQQFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *bz = (const double *)bz_uf.data;
 
 	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, ow, ox, oy, oz);
+	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.AllValid() && b_uf.validity.AllValid() && aw_uf.validity.AllValid() &&
-	                       ax_uf.validity.AllValid() && ay_uf.validity.AllValid() && az_uf.validity.AllValid() &&
-	                       bw_uf.validity.AllValid() && bx_uf.validity.AllValid() && by_uf.validity.AllValid() &&
-	                       bz_uf.validity.AllValid();
+	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
+	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
+	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
+	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
+	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2583,15 +2640,15 @@ static void Se3ComposeQTFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf, tx_uf, ty_uf, tz_uf;
 	UnifiedVectorFormat q_uf, t_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	t_v.ToUnifiedFormat(n, t_uf);
-	q[0]->ToUnifiedFormat(n, qw_uf);
-	q[1]->ToUnifiedFormat(n, qx_uf);
-	q[2]->ToUnifiedFormat(n, qy_uf);
-	q[3]->ToUnifiedFormat(n, qz_uf);
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	q[0].ToUnifiedFormat(qw_uf);
+	q[1].ToUnifiedFormat(qx_uf);
+	q[2].ToUnifiedFormat(qy_uf);
+	q[3].ToUnifiedFormat(qz_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
 
 	auto *qw = (const double *)qw_uf.data;
 	auto *qx = (const double *)qx_uf.data;
@@ -2602,11 +2659,12 @@ static void Se3ComposeQTFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *tz = (const double *)tz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = q_uf.validity.AllValid() && t_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
-	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
-	                       tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid();
+	const bool all_valid =
+	    q_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
+	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() &&
+	    tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2647,15 +2705,15 @@ static void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) 
 
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf, tx_uf, ty_uf, tz_uf;
 	UnifiedVectorFormat q_uf, t_uf;
-	q_v.ToUnifiedFormat(n, q_uf);
-	t_v.ToUnifiedFormat(n, t_uf);
-	q[0]->ToUnifiedFormat(n, qw_uf);
-	q[1]->ToUnifiedFormat(n, qx_uf);
-	q[2]->ToUnifiedFormat(n, qy_uf);
-	q[3]->ToUnifiedFormat(n, qz_uf);
-	t[0]->ToUnifiedFormat(n, tx_uf);
-	t[1]->ToUnifiedFormat(n, ty_uf);
-	t[2]->ToUnifiedFormat(n, tz_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	t_v.ToUnifiedFormat(t_uf);
+	q[0].ToUnifiedFormat(qw_uf);
+	q[1].ToUnifiedFormat(qx_uf);
+	q[2].ToUnifiedFormat(qy_uf);
+	q[3].ToUnifiedFormat(qz_uf);
+	t[0].ToUnifiedFormat(tx_uf);
+	t[1].ToUnifiedFormat(ty_uf);
+	t[2].ToUnifiedFormat(tz_uf);
 
 	auto *qw = (const double *)qw_uf.data;
 	auto *qx = (const double *)qx_uf.data;
@@ -2666,11 +2724,12 @@ static void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *tz = (const double *)tz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = q_uf.validity.AllValid() && t_uf.validity.AllValid() && qw_uf.validity.AllValid() &&
-	                       qx_uf.validity.AllValid() && qy_uf.validity.AllValid() && qz_uf.validity.AllValid() &&
-	                       tx_uf.validity.AllValid() && ty_uf.validity.AllValid() && tz_uf.validity.AllValid();
+	const bool all_valid =
+	    q_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
+	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() &&
+	    tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2709,31 +2768,31 @@ static void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto &w_v = input.data[0];
 	auto &q_v = input.data[1];
 	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(*went[0]);
-	auto &qent = StructVector::GetEntries(*went[1]);
+	auto &tent = StructVector::GetEntries(went[0]);
+	auto &qent = StructVector::GetEntries(went[1]);
 	auto &q2ent = StructVector::GetEntries(q_v);
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat q2w_uf, q2x_uf, q2y_uf, q2z_uf;
 	UnifiedVectorFormat w_uf, t_uf, q_uf, q2_uf;
 
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, q_uf);
-	q_v.ToUnifiedFormat(n, q2_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(q_uf);
+	q_v.ToUnifiedFormat(q2_uf);
 
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
 
-	q2ent[0]->ToUnifiedFormat(n, q2w_uf);
-	q2ent[1]->ToUnifiedFormat(n, q2x_uf);
-	q2ent[2]->ToUnifiedFormat(n, q2y_uf);
-	q2ent[3]->ToUnifiedFormat(n, q2z_uf);
+	q2ent[0].ToUnifiedFormat(q2w_uf);
+	q2ent[1].ToUnifiedFormat(q2x_uf);
+	q2ent[2].ToUnifiedFormat(q2y_uf);
+	q2ent[3].ToUnifiedFormat(q2z_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *ty = (const double *)ty_uf.data;
@@ -2748,13 +2807,14 @@ static void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *q2z = (const double *)q2z_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
-	                       q2_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
-	                       tz_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
-	                       qy_uf.validity.AllValid() && qz_uf.validity.AllValid() && q2w_uf.validity.AllValid() &&
-	                       q2x_uf.validity.AllValid() && q2y_uf.validity.AllValid() && q2z_uf.validity.AllValid();
+	const bool all_valid =
+	    w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() &&
+	    q2_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
+	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && q2w_uf.validity.CannotHaveNull() &&
+	    q2x_uf.validity.CannotHaveNull() && q2y_uf.validity.CannotHaveNull() && q2z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2802,29 +2862,29 @@ static void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto &w_v = input.data[1];
 	auto &qent = StructVector::GetEntries(q_v);
 	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(*went[0]);
-	auto &wqent = StructVector::GetEntries(*went[1]);
+	auto &tent = StructVector::GetEntries(went[0]);
+	auto &wqent = StructVector::GetEntries(went[1]);
 
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, wqw_uf, wqx_uf, wqy_uf, wqz_uf;
 	UnifiedVectorFormat q_uf, w_uf, t_uf, wq_uf;
 
-	q_v.ToUnifiedFormat(n, q_uf);
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, wq_uf);
+	q_v.ToUnifiedFormat(q_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(wq_uf);
 
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
-	wqent[0]->ToUnifiedFormat(n, wqw_uf);
-	wqent[1]->ToUnifiedFormat(n, wqx_uf);
-	wqent[2]->ToUnifiedFormat(n, wqy_uf);
-	wqent[3]->ToUnifiedFormat(n, wqz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
+	wqent[0].ToUnifiedFormat(wqw_uf);
+	wqent[1].ToUnifiedFormat(wqx_uf);
+	wqent[2].ToUnifiedFormat(wqy_uf);
+	wqent[3].ToUnifiedFormat(wqz_uf);
 
 	auto *qw = (const double *)qw_uf.data;
 	auto *qx = (const double *)qx_uf.data;
@@ -2839,13 +2899,14 @@ static void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *wqz = (const double *)wqz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = q_uf.validity.AllValid() && w_uf.validity.AllValid() && t_uf.validity.AllValid() &&
-	                       wq_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
-	                       qy_uf.validity.AllValid() && qz_uf.validity.AllValid() && tx_uf.validity.AllValid() &&
-	                       ty_uf.validity.AllValid() && tz_uf.validity.AllValid() && wqw_uf.validity.AllValid() &&
-	                       wqx_uf.validity.AllValid() && wqy_uf.validity.AllValid() && wqz_uf.validity.AllValid();
+	const bool all_valid =
+	    q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() &&
+	    wq_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
+	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && wqw_uf.validity.CannotHaveNull() &&
+	    wqx_uf.validity.CannotHaveNull() && wqy_uf.validity.CannotHaveNull() && wqz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2890,30 +2951,30 @@ static void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto &w_v = input.data[0];
 	auto &t_v = input.data[1];
 	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(*went[0]);
-	auto &qent = StructVector::GetEntries(*went[1]);
+	auto &tent = StructVector::GetEntries(went[0]);
+	auto &qent = StructVector::GetEntries(went[1]);
 	auto &t2 = StructVector::GetEntries(t_v);
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat t2x_uf, t2y_uf, t2z_uf;
 	UnifiedVectorFormat w_uf, t_uf, q_uf, t2_uf;
 
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, q_uf);
-	t_v.ToUnifiedFormat(n, t2_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(q_uf);
+	t_v.ToUnifiedFormat(t2_uf);
 
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
 
-	t2[0]->ToUnifiedFormat(n, t2x_uf);
-	t2[1]->ToUnifiedFormat(n, t2y_uf);
-	t2[2]->ToUnifiedFormat(n, t2z_uf);
+	t2[0].ToUnifiedFormat(t2x_uf);
+	t2[1].ToUnifiedFormat(t2y_uf);
+	t2[2].ToUnifiedFormat(t2z_uf);
 
 	auto *tx = (const double *)tx_uf.data;
 	auto *ty = (const double *)ty_uf.data;
@@ -2927,13 +2988,14 @@ static void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *t2z = (const double *)t2z_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = w_uf.validity.AllValid() && t_uf.validity.AllValid() && q_uf.validity.AllValid() &&
-	                       t2_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
-	                       tz_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
-	                       qy_uf.validity.AllValid() && qz_uf.validity.AllValid() && t2x_uf.validity.AllValid() &&
-	                       t2y_uf.validity.AllValid() && t2z_uf.validity.AllValid();
+	const bool all_valid =
+	    w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() &&
+	    t2_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
+	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && t2x_uf.validity.CannotHaveNull() &&
+	    t2y_uf.validity.CannotHaveNull() && t2z_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {
@@ -2975,29 +3037,29 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto &w_v = input.data[1];
 	auto &t2 = StructVector::GetEntries(t_v);
 	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(*went[0]);
-	auto &qent = StructVector::GetEntries(*went[1]);
+	auto &tent = StructVector::GetEntries(went[0]);
+	auto &qent = StructVector::GetEntries(went[1]);
 
 	UnifiedVectorFormat t2x_uf, t2y_uf, t2z_uf;
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
 	UnifiedVectorFormat t2_uf, w_uf, t_uf, q_uf;
 
-	t_v.ToUnifiedFormat(n, t2_uf);
-	w_v.ToUnifiedFormat(n, w_uf);
-	went[0]->ToUnifiedFormat(n, t_uf);
-	went[1]->ToUnifiedFormat(n, q_uf);
+	t_v.ToUnifiedFormat(t2_uf);
+	w_v.ToUnifiedFormat(w_uf);
+	went[0].ToUnifiedFormat(t_uf);
+	went[1].ToUnifiedFormat(q_uf);
 
-	t2[0]->ToUnifiedFormat(n, t2x_uf);
-	t2[1]->ToUnifiedFormat(n, t2y_uf);
-	t2[2]->ToUnifiedFormat(n, t2z_uf);
+	t2[0].ToUnifiedFormat(t2x_uf);
+	t2[1].ToUnifiedFormat(t2y_uf);
+	t2[2].ToUnifiedFormat(t2z_uf);
 
-	tent[0]->ToUnifiedFormat(n, tx_uf);
-	tent[1]->ToUnifiedFormat(n, ty_uf);
-	tent[2]->ToUnifiedFormat(n, tz_uf);
-	qent[0]->ToUnifiedFormat(n, qw_uf);
-	qent[1]->ToUnifiedFormat(n, qx_uf);
-	qent[2]->ToUnifiedFormat(n, qy_uf);
-	qent[3]->ToUnifiedFormat(n, qz_uf);
+	tent[0].ToUnifiedFormat(tx_uf);
+	tent[1].ToUnifiedFormat(ty_uf);
+	tent[2].ToUnifiedFormat(tz_uf);
+	qent[0].ToUnifiedFormat(qw_uf);
+	qent[1].ToUnifiedFormat(qx_uf);
+	qent[2].ToUnifiedFormat(qy_uf);
+	qent[3].ToUnifiedFormat(qz_uf);
 
 	auto *t2x = (const double *)t2x_uf.data;
 	auto *t2y = (const double *)t2y_uf.data;
@@ -3011,13 +3073,14 @@ static void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) 
 	auto *qz = (const double *)qz_uf.data;
 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, otx, oty, otz, oqw, oqx, oqy, oqz);
+	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid = t2_uf.validity.AllValid() && w_uf.validity.AllValid() && t_uf.validity.AllValid() &&
-	                       q_uf.validity.AllValid() && t2x_uf.validity.AllValid() && t2y_uf.validity.AllValid() &&
-	                       t2z_uf.validity.AllValid() && tx_uf.validity.AllValid() && ty_uf.validity.AllValid() &&
-	                       tz_uf.validity.AllValid() && qw_uf.validity.AllValid() && qx_uf.validity.AllValid() &&
-	                       qy_uf.validity.AllValid() && qz_uf.validity.AllValid();
+	const bool all_valid =
+	    t2_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() &&
+	    q_uf.validity.CannotHaveNull() && t2x_uf.validity.CannotHaveNull() && t2y_uf.validity.CannotHaveNull() &&
+	    t2z_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
+	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
+	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid) {

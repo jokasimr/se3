@@ -12,8 +12,11 @@ This extension, Se3, provides SE(3) rigid transformations using unit quaternions
 
 ## Building
 
+This version targets DuckDB's `v2.0-cyanoptera` release branch.
+
 Build (recommended):
 ```sh
+git submodule update --init --recursive
 GEN=ninja make
 ```
 The main binaries that will be built are:

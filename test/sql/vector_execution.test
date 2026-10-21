@@ -1,0 +1,82 @@
+# name: test/sql/vector_execution.test
+# description: Vector selection, cardinality and nested NULL propagation across chunks
+# group: [sql]
+
+require se3
+
+# Store structs before filtering so selections reach the struct children.
+# Include a partial final chunk and NULLs at each level of the transform.
+statement ok
+CREATE TABLE vector_inputs AS
+WITH components AS (
+  SELECT i,
+         CASE WHEN i % 11 = 0 THEN NULL
+              ELSE struct_pack(x := CASE WHEN i % 11 = 1 THEN NULL ELSE i::DOUBLE END,
+                               y := 2.0 * i::DOUBLE, z := -i::DOUBLE) END AS v,
+         CASE WHEN i % 11 = 2 THEN NULL
+              ELSE struct_pack(w := CASE WHEN i % 11 = 3 THEN NULL ELSE 1.0::DOUBLE END,
+                               x := 0.0::DOUBLE, y := 0.0::DOUBLE, z := 0.0::DOUBLE) END AS q
+  FROM range(8197) r(i)
+)
+SELECT *, CASE WHEN i % 11 = 4 THEN NULL ELSE struct_pack(t := v, q := q) END AS w
+FROM components;
+
+# Scalar, vec3, quat and nested transform results must preserve row alignment.
+# Compare complete structs so a NULL child cannot hide a non-NULL parent.
+query IIIIII
+SELECT
+  count(*) FILTER (WHERE vadd(v, v) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1) THEN vvec(2.0 * i, 4.0 * i, -2.0 * i) END),
+  count(*) FILTER (WHERE vdot(v, v) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1) THEN 6.0 * i::DOUBLE * i END),
+  count(*) FILTER (WHERE qconj(q) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (2, 3) THEN vvec(1.0, 0.0, 0.0, 0.0) END),
+  count(*) FILTER (WHERE se3_apply(w, vvec(1.0, 2.0, 3.0)) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1, 2, 3, 4) THEN vvec(i + 1.0, 2.0 * i + 2.0, -i + 3.0) END),
+  count(*) FILTER (WHERE se3_inv(w) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1, 2, 3, 4)
+         THEN se3_make(vvec(-i::DOUBLE, -2.0 * i, i::DOUBLE), vvec(1.0, 0.0, 0.0, 0.0)) END),
+  count(*) FILTER (WHERE se3_compose(w, w) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1, 2, 3, 4)
+         THEN se3_make(vvec(2.0 * i, 4.0 * i, -2.0 * i), vvec(1.0, 0.0, 0.0, 0.0)) END)
+FROM vector_inputs
+WHERE i % 3 <> 1;
+----
+0	0	0	0	0	0
+
+# NULL output structs must expose NULL children, including after composition.
+query IIII
+WITH results AS (
+  SELECT i, se3_compose(w, w) AS result, vadd(v, v) AS sum
+  FROM vector_inputs
+  WHERE i % 3 <> 1
+)
+SELECT
+  count(*) FILTER (WHERE (result IS NULL) IS DISTINCT FROM (i % 11 IN (0, 1, 2, 3, 4))),
+  count(*) FILTER (WHERE (result.t.x IS NULL) IS DISTINCT FROM (i % 11 IN (0, 1, 2, 3, 4))),
+  count(*) FILTER (WHERE (result.q.w IS NULL) IS DISTINCT FROM (i % 11 IN (0, 1, 2, 3, 4))),
+  count(*) FILTER (WHERE (sum.x IS NULL) IS DISTINCT FROM (i % 11 IN (0, 1)))
+FROM results;
+----
+0	0	0	0
+
+# A nontrivial constant rotation applied to selected, varying points.
+query I
+SELECT count(*) FILTER (WHERE
+  se3_apply(vvec(0.0, 0.0, 0.0, 1.0), v) IS DISTINCT FROM
+    CASE WHEN i % 11 NOT IN (0, 1) THEN vvec(-i::DOUBLE, -2.0 * i, -i::DOUBLE) END)
+FROM vector_inputs
+WHERE i % 3 <> 1;
+----
+0
+
+# Constant nested results need the full logical cardinality of every chunk.
+query II
+SELECT count(*), count(*) FILTER (WHERE se3_apply(se3_identity(), vvec(1.0, 2.0, 3.0))
+                                       IS DISTINCT FROM vvec(1.0, 2.0, 3.0))
+FROM range(8197);
+----
+8197	0
+
+statement ok
+DROP TABLE vector_inputs;

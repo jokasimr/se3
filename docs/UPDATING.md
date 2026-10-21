@@ -1,4 +1,46 @@
-# Extension updating 
+# Extension updating
+
+## Current target: DuckDB 2.0
+
+Both submodules and the distribution workflow target `v2.0-cyanoptera`, DuckDB's
+2.0 release branch. The submodule commits pin the sources used for local builds;
+the CI workflow follows the release branch. Initialize them before building:
+
+```sh
+git submodule update --init --recursive
+GEN=ninja make
+make test
+```
+
+The migration from 1.5.4 uses these equivalent C++ API operations:
+
+- Struct field names use `child_list_t<LogicalType>` (now backed by `Identifier`),
+  and function-set names use `Identifier`. Field names, order, types, overloads,
+  and descriptions are unchanged.
+- Scalar signatures now own their parameter names. Registration copies the existing
+  description names into each signature so `duckdb_functions()` reports them.
+- `StructVector::GetEntries` returns `vector<Vector>` instead of
+  `vector<unique_ptr<Vector>>`. Children are accessed directly. Filtered structs
+  carry the selections in their children; each child still gets its own unified
+  format and selection index.
+- Output buffers use `FlatVector::GetDataMutable` and `ValidityMutable`. Vector
+  lengths are set explicitly; setting a struct's length propagates recursively
+  to its children.
+- `ToUnifiedFormat(format)` uses the vector's stored length. The old count-taking
+  overload in 2.0 delegates to this method and ignores its count argument.
+- `CannotHaveNull()` replaces `AllValid()` with the same validity-mask fast path.
+  Per-row checks still apply each input's selection vector, and
+  `FlatVector::SetNull` still marks nested struct children NULL recursively.
+- `duckdb_extension_statically_link(se3)` preserves the shell and test runner's
+  built-in extension. `duckdb_extension_load` alone now only builds it.
+
+The numerical kernels and scalar function NULL-handling defaults are unchanged.
+`test/sql/vector_execution.test` supplements the existing API and numerical tests
+with filtered structs, constant inputs, nested NULLs, and multiple chunks with a
+partial final chunk.
+
+## Updating to subsequent releases
+
 When cloning this template, the target version of DuckDB should be the latest stable release of DuckDB. However, there 
 will inevitably come a time when a new DuckDB is released and the extension repository needs updating. This process goes
 as follows:
