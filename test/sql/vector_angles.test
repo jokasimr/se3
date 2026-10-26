@@ -1,0 +1,446 @@
+# name: test/sql/vector_angles.test
+# description: Geometric angles and trigonometric ratios in 3D and 4D
+# group: [sql]
+
+require se3
+
+# vangle preserves small angles even when cosine has rounded to one.
+foreach epsilon 1e-10 1e-160 1e-300 1e-320
+
+query IIII
+SELECT
+  abs(vangle(vvec(1, 0, 0), vvec(1, {epsilon}, 0)) / {epsilon} - 1.0) < 1e-12,
+  abs(vangle(vvec({epsilon}, 0, 0, 1), vvec(0, 0, 0, 1)) / {epsilon} - 1.0) < 1e-12,
+  abs(vangle(vvec(1, 0, 0), vvec(-1, {epsilon}, 0)) - (pi() - {epsilon})) < 1e-15,
+  abs(vangle(vvec({epsilon}, 0, 0, -1), vvec(0, 0, 0, 1)) - (pi() - {epsilon})) < 1e-15;
+----
+true	true	true	true
+
+endloop
+
+# Small angles survive independent extreme scales when components remain representable.
+foreach scale 1e200 1e-200
+
+query II
+SELECT
+  abs(vangle(vvec(1.0 / {scale}, 0, 0), vvec({scale}, {scale} * 1e-100, 0)) / 1e-100 - 1.0) < 1e-12,
+  abs(vangle(vvec(0, 0, 0, 1.0 / {scale}), vvec({scale} * 1e-100, 0, 0, {scale})) / 1e-100 - 1.0) < 1e-12;
+----
+true	true
+
+endloop
+
+query IIIIII
+SELECT
+  abs(vangle(vvec(1, 2, 3), vvec(2, 4, 6))) < 1e-15,
+  vangle(vvec(1, 2, 3), vvec(-2, -4, -6)) = pi(),
+  vangle(vvec(1, 0, 0), vvec(0, 2, 0)) = pi()/2,
+  abs(vangle(vvec(1, 2, 3, 4), vvec(2, 4, 6, 8))) < 1e-15,
+  vangle(vvec(1, 2, 3, 4), vvec(-2, -4, -6, -8)) = pi(),
+  vangle(vvec(0, 1, 0, 0), vvec(0, 0, 0, 2)) = pi()/2;
+----
+true	true	true	true	true	true
+
+# Non-unit acute and obtuse vectors, including argument symmetry.
+foreach sign 1 -1
+
+query IIIIII
+SELECT
+  abs(vsin_angle(vvec(2, 0, 0), vvec(3 * {sign}, 4, 0)) - 0.8) < 1e-12,
+  abs(vtan_angle(vvec(2, 0, 0), vvec(3 * {sign}, 4, 0)) - {sign} * 4.0/3.0) < 1e-12,
+  abs(vcot_angle(vvec(2, 0, 0), vvec(3 * {sign}, 4, 0)) - {sign} * 0.75) < 1e-12,
+  abs(vsin_angle(vvec(3 * {sign}, 4, 0, 0), vvec(2, 0, 0, 0)) - 0.8) < 1e-12,
+  abs(vtan_angle(vvec(3 * {sign}, 4, 0, 0), vvec(2, 0, 0, 0)) - {sign} * 4.0/3.0) < 1e-12,
+  abs(vcot_angle(vvec(3 * {sign}, 4, 0, 0), vvec(2, 0, 0, 0)) - {sign} * 0.75) < 1e-12;
+----
+true	true	true	true	true	true
+
+endloop
+
+# All coordinates contribute, including all six exterior-product components in 4D.
+query IIIIII
+SELECT
+  abs(vsin_angle(vvec(1, 2, 3), vvec(4, 5, 6)) - sqrt(54.0/1078.0)) < 1e-12,
+  abs(vtan_angle(vvec(1, 2, 3), vvec(4, 5, 6)) - sqrt(54.0)/32.0) < 1e-12,
+  abs(vcot_angle(vvec(1, 2, 3), vvec(4, 5, 6)) - 32.0/sqrt(54.0)) < 1e-12,
+  abs(vsin_angle(vvec(1, 2, 3, 4), vvec(4, 3, 2, 1)) - sqrt(500.0)/30.0) < 1e-12,
+  abs(vtan_angle(vvec(1, 2, 3, 4), vvec(4, 3, 2, 1)) - sqrt(500.0)/20.0) < 1e-12,
+  abs(vcot_angle(vvec(1, 2, 3, 4), vvec(4, 3, 2, 1)) - 20.0/sqrt(500.0)) < 1e-12;
+----
+true	true	true	true	true	true
+
+# Direct geometric ratios across small, moderate and large slopes.
+foreach component 1e-8 1e-4 0.1 1.0 10.0
+
+query IIIIII
+WITH inputs AS (SELECT {component}::DOUBLE AS x)
+SELECT
+  abs(vsin_angle(vvec(1, 0, 0), vvec(1, x, 0)) / (x / sqrt(1 + x*x)) - 1) < 1e-12,
+  abs(vtan_angle(vvec(1, 0, 0), vvec(1, x, 0)) / x - 1) < 1e-12,
+  abs(vcot_angle(vvec(1, 0, 0), vvec(1, x, 0)) * x - 1) < 1e-12,
+  abs(vsin_angle(vvec(0, 0, 0, 1), vvec(x, 0, 0, 1)) / (x / sqrt(1 + x*x)) - 1) < 1e-12,
+  abs(vtan_angle(vvec(0, 0, 0, 1), vvec(x, 0, 0, 1)) / x - 1) < 1e-12,
+  abs(vcot_angle(vvec(0, 0, 0, 1), vvec(x, 0, 0, 1)) * x - 1) < 1e-12
+FROM inputs;
+----
+true	true	true	true	true	true
+
+query IIIIII
+WITH inputs AS (SELECT {component}::DOUBLE AS x)
+SELECT
+  abs(vsin_angle(vvec(1, 0, 0), vvec(-x, 1, 0)) * sqrt(1 + x*x) - 1) < 1e-12,
+  abs(vtan_angle(vvec(1, 0, 0), vvec(-x, 1, 0)) * x + 1) < 1e-12,
+  abs(vcot_angle(vvec(1, 0, 0), vvec(-x, 1, 0)) / x + 1) < 1e-12,
+  abs(vsin_angle(vvec(0, 0, 0, 1), vvec(1, 0, 0, -x)) * sqrt(1 + x*x) - 1) < 1e-12,
+  abs(vtan_angle(vvec(0, 0, 0, 1), vvec(1, 0, 0, -x)) * x + 1) < 1e-12,
+  abs(vcot_angle(vvec(0, 0, 0, 1), vvec(1, 0, 0, -x)) / x + 1) < 1e-12
+FROM inputs;
+----
+true	true	true	true	true	true
+
+endloop
+
+# Exact orthogonality and collinearity retain IEEE division-by-zero behavior.
+query IIIIII
+SELECT
+  vsin_angle(vvec(1, 0, 0), vvec(0, 2, 0)) = 1.0,
+  vtan_angle(vvec(1, 0, 0), vvec(0, 2, 0)) = 'inf'::DOUBLE,
+  vcot_angle(vvec(1, 0, 0), vvec(0, 2, 0)) = 0.0,
+  vsin_angle(vvec(0, 1, 0, 0), vvec(0, 0, 0, 2)) = 1.0,
+  vtan_angle(vvec(0, 1, 0, 0), vvec(0, 0, 0, 2)) = 'inf'::DOUBLE,
+  vcot_angle(vvec(0, 1, 0, 0), vvec(0, 0, 0, 2)) = 0.0;
+----
+true	true	true	true	true	true
+
+foreach sign 1 -1
+
+query IIIIII
+SELECT
+  vsin_angle(vvec(2, 0, 0), vvec({sign} * 3, 0, 0)) = 0.0,
+  vtan_angle(vvec(2, 0, 0), vvec({sign} * 3, 0, 0)) = 0.0,
+  vcot_angle(vvec(2, 0, 0), vvec({sign} * 3, 0, 0)) = {sign} * 'inf'::DOUBLE,
+  vsin_angle(vvec(0, 0, 2, 0), vvec(0, 0, {sign} * 3, 0)) = 0.0,
+  vtan_angle(vvec(0, 0, 2, 0), vvec(0, 0, {sign} * 3, 0)) = 0.0,
+  vcot_angle(vvec(0, 0, 2, 0), vvec(0, 0, {sign} * 3, 0)) = {sign} * 'inf'::DOUBLE;
+----
+true	true	true	true	true	true
+
+# General collinear vectors permit rounding-level geometric error.
+query IIIIII
+WITH vectors AS (
+  SELECT vvec(1.25, 2.5, -3.75) AS a3, vvec(1.25, 2.5, -3.75, 4.25) AS a4
+)
+SELECT
+  abs(vsin_angle(a3, vscale(a3, {sign} * 2.0))) < 1e-15,
+  abs(vtan_angle(a3, vscale(a3, {sign} * 2.0))) < 1e-15,
+  abs(1.0/vcot_angle(a3, vscale(a3, {sign} * 2.0))) < 1e-15,
+  abs(vsin_angle(a4, vscale(a4, {sign} * 2.0))) < 1e-15,
+  abs(vtan_angle(a4, vscale(a4, {sign} * 2.0))) < 1e-15,
+  abs(1.0/vcot_angle(a4, vscale(a4, {sign} * 2.0))) < 1e-15
+FROM vectors;
+----
+true	true	true	true	true	true
+
+# Tiny angles near both parallel and antiparallel directions must not collapse to zero.
+foreach epsilon 1e-12 1e-160 1e-300
+
+query IIIIII
+SELECT
+  abs(vsin_angle(vvec(1, 0, 0), vvec({sign}, {epsilon}, 0)) / {epsilon} - 1.0) < 1e-12,
+  abs(vtan_angle(vvec(1, 0, 0), vvec({sign}, {epsilon}, 0)) / {epsilon} - {sign}) < 1e-12,
+  abs(vcot_angle(vvec(1, 0, 0), vvec({sign}, {epsilon}, 0)) * {epsilon} - {sign}) < 1e-12,
+  abs(vsin_angle(vvec(0, 0, 0, 1), vvec({epsilon}, 0, 0, {sign})) / {epsilon} - 1.0) < 1e-12,
+  abs(vtan_angle(vvec(0, 0, 0, 1), vvec({epsilon}, 0, 0, {sign})) / {epsilon} - {sign}) < 1e-12,
+  abs(vcot_angle(vvec(0, 0, 0, 1), vvec({epsilon}, 0, 0, {sign})) * {epsilon} - {sign}) < 1e-12;
+----
+true	true	true	true	true	true
+
+endloop
+
+endloop
+
+# Kahan's difference of products preserves this small area even though the
+# two independently rounded products are equal.
+query IIIIIIII
+WITH inputs AS (
+  SELECT pow(2.0, -27) AS e
+), vectors AS (
+  SELECT e * e / 2.0 AS expected,
+         vvec(1, 1 + e, 0) AS a3, vvec(1 - e, 1, 0) AS b3,
+         vvec(1, 0, 0, 1 + e) AS a4, vvec(1 - e, 0, 0, 1) AS b4
+  FROM inputs
+)
+SELECT
+  abs(vangle(a3, b3) / expected - 1.0) < 1e-12,
+  abs(vangle(a4, b4) / expected - 1.0) < 1e-12,
+  abs(vsin_angle(a3, b3) / expected - 1.0) < 1e-12,
+  abs(vtan_angle(a3, b3) / expected - 1.0) < 1e-12,
+  abs(vcot_angle(a3, b3) * expected - 1.0) < 1e-12,
+  abs(vsin_angle(a4, b4) / expected - 1.0) < 1e-12,
+  abs(vtan_angle(a4, b4) / expected - 1.0) < 1e-12,
+  abs(vcot_angle(a4, b4) * expected - 1.0) < 1e-12
+FROM vectors;
+----
+true	true	true	true	true	true	true	true
+
+# Near orthogonality, the dot residual may round to zero or change sign.
+# Check absolute cotangent error, allowing the reciprocal tangent to be zero.
+query IIII
+WITH inputs AS (
+  SELECT pow(2.0, -27) AS e
+), vectors AS (
+  SELECT -e * e / 2.0 AS expected_cot,
+         vvec(1, 1 + e, 0) AS a3, vvec(-1, 1 - e, 0) AS b3,
+         vvec(1, 0, 0, 1 + e) AS a4, vvec(-1, 0, 0, 1 - e) AS b4
+  FROM inputs
+)
+SELECT
+  abs(1.0/vtan_angle(a3, b3) - expected_cot) < 1e-15,
+  abs(vcot_angle(a3, b3) - expected_cot) < 1e-15,
+  abs(1.0/vtan_angle(a4, b4) - expected_cot) < 1e-15,
+  abs(vcot_angle(a4, b4) - expected_cot) < 1e-15
+FROM vectors;
+----
+true	true	true	true
+
+# Severe dot-product cancellation, including permutations and extreme scales.
+foreach epsilon 1e-30 1e-100
+
+foreach sign 1 -1
+
+foreach exponent 0 600 -600
+
+# The first and third products cancel. The small residual need not survive
+# ordinary summation, but the absolute cotangent error must remain small.
+query IIIIIIII
+WITH parameters AS (
+  SELECT {sign} * {epsilon}::DOUBLE AS e, pow(2.0, {exponent}) AS s,
+         pow(2.0, -({exponent})) AS t, sqrt(3.65 * 2.65) AS area
+), vectors AS (
+  SELECT e, area,
+    vvec(1.1*s, s, 1.2*s) a3, vvec(1.2*t, e*t, -1.1*t) b3,
+    vvec(s, 1.2*s, 1.1*s) p3, vvec(e*t, -1.1*t, 1.2*t) q3,
+    vvec(1.1*s, s, 1.2*s, 0) a4, vvec(1.2*t, e*t, -1.1*t, 0) b4,
+    vvec(0, 1.2*s, 1.1*s, s) p4, vvec(0, -1.1*t, 1.2*t, e*t) q4
+  FROM parameters
+)
+SELECT
+  abs(1.0/vtan_angle(a3,b3) - e/area) < 1e-15,
+  abs(vcot_angle(a3,b3) - e/area) < 1e-15,
+  abs(1.0/vtan_angle(q3,p3) - e/area) < 1e-15,
+  abs(vcot_angle(q3,p3) - e/area) < 1e-15,
+  abs(1.0/vtan_angle(a4,b4) - e/area) < 1e-15,
+  abs(vcot_angle(a4,b4) - e/area) < 1e-15,
+  abs(1.0/vtan_angle(q4,p4) - e/area) < 1e-15,
+  abs(vcot_angle(q4,p4) - e/area) < 1e-15
+FROM vectors;
+----
+true	true	true	true	true	true	true	true
+
+endloop
+
+endloop
+
+endloop
+
+# A normal product of squared norms does not prevent the area from underflowing.
+query IIIIII
+SELECT
+  abs(vsin_angle(vvec(1e-75, 0, 0), vvec(1e-75, 1e-275, 0)) / 1e-200 - 1.0) < 1e-12,
+  abs(vtan_angle(vvec(1e-75, 0, 0), vvec(1e-75, 1e-275, 0)) / 1e-200 - 1.0) < 1e-12,
+  abs(vcot_angle(vvec(1e-75, 0, 0), vvec(1e-75, 1e-275, 0)) * 1e-200 - 1.0) < 1e-12,
+  abs(vsin_angle(vvec(0, 0, 0, 1e-75), vvec(1e-275, 0, 0, 1e-75)) / 1e-200 - 1.0) < 1e-12,
+  abs(vtan_angle(vvec(0, 0, 0, 1e-75), vvec(1e-275, 0, 0, 1e-75)) / 1e-200 - 1.0) < 1e-12,
+  abs(vcot_angle(vvec(0, 0, 0, 1e-75), vvec(1e-275, 0, 0, 1e-75)) * 1e-200 - 1.0) < 1e-12;
+----
+true	true	true	true	true	true
+
+query IIIIII
+SELECT
+  vsin_angle(vvec(1, 0, 0), vvec(1, 1e-320, 0)) = 1e-320,
+  vtan_angle(vvec(1, 0, 0), vvec(1, 1e-320, 0)) = 1e-320,
+  vcot_angle(vvec(1, 0, 0), vvec(1, 1e-320, 0)) = 'inf'::DOUBLE,
+  vsin_angle(vvec(0, 0, 0, 1), vvec(1e-320, 0, 0, 1)) = 1e-320,
+  vtan_angle(vvec(0, 0, 0, 1), vvec(1e-320, 0, 0, 1)) = 1e-320,
+  vcot_angle(vvec(0, 0, 0, 1), vvec(1e-320, 0, 0, 1)) = 'inf'::DOUBLE;
+----
+true	true	true	true	true	true
+
+# Independent scales include overflow, underflow, subnormal inputs and norms exceeding DBL_MAX.
+statement ok
+CREATE TABLE angle_scales AS
+SELECT a, b FROM (VALUES
+  (1.0, 1.0), (1e200, 1e200), (1e-200, 1e-200),
+  (1e308, 1e308), (1e-320, 1e-320), (1.6e-162, 1e150),
+  (1e150, 1.6e-162), (1e308, 1e-320), (1e-320, 1e308)
+) scales(a, b);
+
+query IIIIII
+SELECT
+  count(*) FILTER (WHERE (abs(vsin_angle(vvec(a, a, 0), vvec(b, 0, 0)) - sqrt(0.5)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(vvec(a, a, 0), vvec(b, 0, 0)) - 1.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(vvec(a, a, 0), vvec(b, 0, 0)) - 1.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vsin_angle(vvec(a, a, a, a), vvec(b, b, 0, 0)) - sqrt(0.5)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(vvec(a, a, a, a), vvec(b, b, 0, 0)) - 1.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(vvec(a, a, a, a), vvec(b, b, 0, 0)) - 1.0) < 1e-12) IS NOT TRUE)
+FROM angle_scales;
+----
+0	0	0	0	0	0
+
+foreach function vcos_angle vsin_angle vtan_angle vcot_angle vangle
+
+# Zero and non-finite vectors produce NaN in either argument.
+query IIII
+SELECT
+  bool_and(isnan({function}(vvec(x, 0, 0), vvec(1, 2, 3)))),
+  bool_and(isnan({function}(vvec(1, 2, 3), vvec(0, x, 0)))),
+  bool_and(isnan({function}(vvec(0, 0, x, 0), vvec(1, 2, 3, 4)))),
+  bool_and(isnan({function}(vvec(1, 2, 3, 4), vvec(0, 0, 0, x))))
+FROM (VALUES (0.0), ('nan'::DOUBLE), ('inf'::DOUBLE), ('-inf'::DOUBLE)) inputs(x);
+----
+true	true	true	true
+
+query IIII
+SELECT
+  {function}(NULL::STRUCT(x DOUBLE, y DOUBLE, z DOUBLE), vvec(1, 2, 3)) IS NULL,
+  {function}(vvec(1, 2, 3), NULL::STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)) IS NULL,
+  {function}(NULL::STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE), vvec(1, 2, 3, 4)) IS NULL,
+  {function}(vvec(1, 2, 3, 4), NULL::STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)) IS NULL;
+----
+true	true	true	true
+
+# Each required struct field propagates NULL, in either argument.
+foreach field x y z
+
+query II
+WITH vectors AS (
+  SELECT struct_pack(x := CASE WHEN '{field}' = 'x' THEN NULL ELSE 1.0 END,
+                     y := CASE WHEN '{field}' = 'y' THEN NULL ELSE 2.0 END,
+                     z := CASE WHEN '{field}' = 'z' THEN NULL ELSE 3.0 END) AS v
+)
+SELECT {function}(v, vvec(1, 2, 3)) IS NULL,
+       {function}(vvec(1, 2, 3), v) IS NULL
+FROM vectors;
+----
+true	true
+
+endloop
+
+foreach field w x y z
+
+query II
+WITH vectors AS (
+  SELECT struct_pack(w := CASE WHEN '{field}' = 'w' THEN NULL ELSE 1.0 END,
+                     x := CASE WHEN '{field}' = 'x' THEN NULL ELSE 2.0 END,
+                     y := CASE WHEN '{field}' = 'y' THEN NULL ELSE 3.0 END,
+                     z := CASE WHEN '{field}' = 'z' THEN NULL ELSE 4.0 END) AS v
+)
+SELECT {function}(v, vvec(1, 2, 3, 4)) IS NULL,
+       {function}(vvec(1, 2, 3, 4), v) IS NULL
+FROM vectors;
+----
+true	true
+
+endloop
+
+endloop
+
+# Store flat inputs, then exercise selected rows and mixed validity across several chunks.
+statement ok
+CREATE TABLE angle_inputs AS
+SELECT i, CASE WHEN i % 2 = 0 THEN 1.0 ELSE -1.0 END AS sign,
+       vvec(i + 1, 0, 0) AS a3, vvec(sign * 3 * (i + 1), 4 * (i + 1), 0) AS b3,
+       vvec(i + 1, 0, 0, 0) AS a4, vvec(sign * 3 * (i + 1), 4 * (i + 1), 0, 0) AS b4
+FROM range(8197) r(i);
+
+foreach mode flat selected
+
+query IIIIIIIIII
+SELECT
+  count(*) FILTER (WHERE (abs(vangle(a3, b3) - atan2(4.0, sign * 3.0)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vangle(a4, b4) - atan2(4.0, sign * 3.0)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcos_angle(a3, b3) - sign * 0.6) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcos_angle(a4, b4) - sign * 0.6) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vsin_angle(a3, b3) - 0.8) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(a3, b3) - sign * 4.0/3.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(a3, b3) - sign * 0.75) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vsin_angle(a4, b4) - 0.8) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(a4, b4) - sign * 4.0/3.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(a4, b4) - sign * 0.75) < 1e-12) IS NOT TRUE)
+FROM angle_inputs
+WHERE '{mode}' = 'flat' OR i % 3 <> 1;
+----
+0	0	0	0	0	0	0	0	0	0
+
+endloop
+
+statement ok
+CREATE TABLE nullable_angle_inputs AS
+SELECT i, sign,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE
+         struct_pack(x := a3.x, y := CASE WHEN i % 5 = 1 THEN NULL ELSE a3.y END, z := a3.z) END AS a3,
+       CASE WHEN i % 5 = 2 THEN NULL ELSE
+         struct_pack(x := b3.x, y := b3.y, z := CASE WHEN i % 5 = 3 THEN NULL ELSE b3.z END) END AS b3,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE
+         struct_pack(w := a4.w, x := a4.x, y := CASE WHEN i % 5 = 1 THEN NULL ELSE a4.y END, z := a4.z) END AS a4,
+       CASE WHEN i % 5 = 2 THEN NULL ELSE
+         struct_pack(w := b4.w, x := b4.x, y := b4.y, z := CASE WHEN i % 5 = 3 THEN NULL ELSE b4.z END) END AS b4
+FROM angle_inputs;
+
+query IIIIIIIIII
+SELECT
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vangle(a3, b3) - atan2(4.0, sign * 3.0)) < 1e-12
+                         ELSE vangle(a3, b3) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vangle(a4, b4) - atan2(4.0, sign * 3.0)) < 1e-12
+                         ELSE vangle(a4, b4) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vcos_angle(a3, b3) - sign * 0.6) < 1e-12
+                         ELSE vcos_angle(a3, b3) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vcos_angle(a4, b4) - sign * 0.6) < 1e-12
+                         ELSE vcos_angle(a4, b4) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vsin_angle(a3, b3) - 0.8) < 1e-12
+                         ELSE vsin_angle(a3, b3) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vtan_angle(a3, b3) - sign * 4.0/3.0) < 1e-12
+                         ELSE vtan_angle(a3, b3) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vcot_angle(a3, b3) - sign * 0.75) < 1e-12
+                         ELSE vcot_angle(a3, b3) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vsin_angle(a4, b4) - 0.8) < 1e-12
+                         ELSE vsin_angle(a4, b4) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vtan_angle(a4, b4) - sign * 4.0/3.0) < 1e-12
+                         ELSE vtan_angle(a4, b4) IS NULL END) IS NOT TRUE),
+  count(*) FILTER (WHERE (CASE WHEN i % 5 = 4 THEN abs(vcot_angle(a4, b4) - sign * 0.75) < 1e-12
+                         ELSE vcot_angle(a4, b4) IS NULL END) IS NOT TRUE)
+FROM nullable_angle_inputs
+WHERE i % 3 <> 1;
+----
+0	0	0	0	0	0	0	0	0	0
+
+# Constant inputs must retain the cardinality of full and partial chunks.
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+query IIIIIIIIIII
+SELECT count(*),
+  count(*) FILTER (WHERE (abs(vcos_angle(vvec(1, 0, 0), vvec(3, 4, 0)) - 0.6) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcos_angle(vvec(1, 0, 0, 0), vvec(3, 4, 0, 0)) - 0.6) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vangle(vvec(1, 0, 0), vvec(3, 4, 0)) - atan2(4.0, 3.0)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vangle(vvec(1, 0, 0, 0), vvec(3, 4, 0, 0)) - atan2(4.0, 3.0)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vsin_angle(vvec(1, 0, 0), vvec(3, 4, 0)) - 0.8) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(vvec(1, 0, 0), vvec(3, 4, 0)) - 4.0/3.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(vvec(1, 0, 0), vvec(3, 4, 0)) - 0.75) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vsin_angle(vvec(1, 0, 0, 0), vvec(3, 4, 0, 0)) - 0.8) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vtan_angle(vvec(1, 0, 0, 0), vvec(3, 4, 0, 0)) - 4.0/3.0) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcot_angle(vvec(1, 0, 0, 0), vvec(3, 4, 0, 0)) - 0.75) < 1e-12) IS NOT TRUE)
+FROM range(8197);
+----
+8197	0	0	0	0	0	0	0	0	0	0
+
+statement ok
+RESET disabled_optimizers;
+
+# Sharing the dot-product helper must preserve cosine's negative zero.
+query II
+SELECT
+  1.0/vcos_angle(vvec(1, 0, 0), vvec('-0.0'::DOUBLE, -1, '-0.0'::DOUBLE)) = '-inf'::DOUBLE,
+  1.0/vcos_angle(vvec(1, 0, 0, 0), vvec('-0.0'::DOUBLE, -1, '-0.0'::DOUBLE, '-0.0'::DOUBLE)) = '-inf'::DOUBLE;
+----
+true	true

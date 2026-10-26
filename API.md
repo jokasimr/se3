@@ -23,7 +23,9 @@ A point is translated by `t` first, then rotated by quaternion `q`. Quaternions 
 - All calculations use double precision.
 - Vector math functions follow floating-point semantics and do not add explicit zero-denominator guards.
 - Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
-- `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
+- `vangle` returns the unsigned angle between vectors in radians, in `[0, pi]`. `vcos_angle`, `vsin_angle`, `vtan_angle`, and `vcot_angle` return the corresponding trigonometric ratios without clamping.
+- All five angle functions return `NaN` if either vector has zero length or a non-finite component.
+- Angle calculations rescale inputs to limit intermediate overflow and underflow. Cancellation and component underflow during scaling remain possible.
 
 ## Functions
 
@@ -98,8 +100,38 @@ Signatures:
 - `vcos_angle(a: vec3, b: vec3) -> DOUBLE`
 - `vcos_angle(a: vec4, b: vec4) -> DOUBLE`
 
+### `vsin_angle(a, b) -> DOUBLE`
+Sine of the angle between vectors: `A / (vnorm(a) * vnorm(b))`, where
+`A = sqrt(sum_{i<j} (a_i*b_j - a_j*b_i)^2)` is the parallelogram area
+(the cross-product norm in 3D).
+
+Signatures:
+- `vsin_angle(a: vec3, b: vec3) -> DOUBLE`
+- `vsin_angle(a: vec4, b: vec4) -> DOUBLE`
+
+### `vtan_angle(a, b) -> DOUBLE`
+Tangent of the angle between vectors: `A / vdot(a,b)`, with `A` as in `vsin_angle`.
+For nonzero `A`, division by a computed `+0` or `-0` returns `+Inf` or `-Inf`,
+respectively. Near orthogonality, dot-product cancellation can cause large
+relative error or reverse the sign.
+
+Signatures:
+- `vtan_angle(a: vec3, b: vec3) -> DOUBLE`
+- `vtan_angle(a: vec4, b: vec4) -> DOUBLE`
+
+### `vcot_angle(a, b) -> DOUBLE`
+Cotangent of the angle between vectors: `vdot(a,b) / A`, with `A` as in `vsin_angle`.
+For a nonzero dot product, a computed zero area returns infinity with the dot
+product's sign.
+
+Signatures:
+- `vcot_angle(a: vec3, b: vec3) -> DOUBLE`
+- `vcot_angle(a: vec4, b: vec4) -> DOUBLE`
+
 ### `vangle(a, b) -> DOUBLE`
-Angle in radians between vectors.
+Returns the unsigned angle between vectors in radians, in `[0, pi]`:
+`atan2(A, vdot(a,b))`, with `A` as in `vsin_angle`.
+This can resolve small angles whose cosine rounds to one.
 
 Signatures:
 - `vangle(a: vec3, b: vec3) -> DOUBLE`

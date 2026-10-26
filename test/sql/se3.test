@@ -10,7 +10,8 @@ query IIII
 WITH names(function_name) AS (
   VALUES
     ('vvec'), ('vadd'), ('vsub'), ('vscale'), ('vdot'), ('vnorm2'), ('vnorm'), ('vnormalize'),
-    ('vcross'), ('vcos_angle'), ('vangle'), ('vproj'), ('vrej'), ('quat_from_axis_angle'),
+    ('vcross'), ('vcos_angle'), ('vsin_angle'), ('vtan_angle'), ('vcot_angle'),
+    ('vangle'), ('vproj'), ('vrej'), ('quat_from_axis_angle'),
     ('qmul'), ('qconj'), ('qnorm2'), ('se3_identity'), ('se3_make'), ('se3_from_axis_angle'),
     ('se3_apply'), ('se3_inv'), ('se3_compose')
 )
@@ -19,7 +20,7 @@ FROM duckdb_functions()
 WHERE function_type = 'scalar'
   AND function_name IN (SELECT function_name FROM names);
 ----
-47	47	47	47
+53	53	53	53
 
 # vvec overload metadata is matched by concrete parameter types
 query II
@@ -2143,7 +2144,7 @@ FROM angle_scales;
 statement ok
 DROP TABLE angle_scales;
 
-# vangle clamps finite cosine roundoff near +/-1
+# vangle stays finite near collinearity even when cosine rounds beyond +/-1
 query IIII
 WITH vals AS (
   SELECT

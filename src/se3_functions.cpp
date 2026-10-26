@@ -846,157 +846,111 @@ void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
-// vcos_angle(vec3, vec3) -> DOUBLE
-void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<double>(
-	        result, n, [](Vec3 a, Vec3 b) { return CosAngle3(a.x, a.y, a.z, b.x, b.y, b.z); }, input.data[0],
-	        input.data[1])) {
-		return;
+template <std::size_t N, AngleFunction FUNCTION>
+static void VAngleFn(DataChunk &input, Vector &result) {
+	const idx_t count = input.size();
+	if constexpr (N == 3) {
+		if (TryExecuteFlatVec3<double>(
+		        result, count,
+		        [](Vec3 a, Vec3 b) {
+			        return VectorAngle<3, FUNCTION>({a.x, a.y, a.z}, {b.x, b.y, b.z});
+		        },
+		        input.data[0], input.data[1])) {
+			return;
+		}
+	} else {
+		if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+			const FlatQuat a(input.data[0]), b(input.data[1]);
+			auto writer = FlatVector::Writer<double>(result, count);
+			for (idx_t i = 0; i < count; i++) {
+				const auto av = a[i], bv = b[i];
+				writer.WriteValue(VectorAngle<4, FUNCTION>({av.w, av.x, av.y, av.z}, {bv.w, bv.x, bv.y, bv.z}));
+			}
+			return;
+		}
+	}
+	auto &a_vector = input.data[0];
+	auto &b_vector = input.data[1];
+	auto &a_children = StructVector::GetEntries(a_vector);
+	auto &b_children = StructVector::GetEntries(b_vector);
+	UnifiedVectorFormat a_parent, b_parent;
+	a_vector.ToUnifiedFormat(a_parent);
+	b_vector.ToUnifiedFormat(b_parent);
+	std::array<UnifiedVectorFormat, N> a_formats, b_formats;
+	std::array<const double *, N> a_data, b_data;
+	bool all_valid = a_parent.validity.CannotHaveNull() && b_parent.validity.CannotHaveNull();
+	for (std::size_t component = 0; component < N; component++) {
+		a_children[component].ToUnifiedFormat(a_formats[component]);
+		b_children[component].ToUnifiedFormat(b_formats[component]);
+		a_data[component] = UnifiedVectorFormat::GetData<double>(a_formats[component]);
+		b_data[component] = UnifiedVectorFormat::GetData<double>(b_formats[component]);
+		all_valid &= a_formats[component].validity.CannotHaveNull() && b_formats[component].validity.CannotHaveNull();
 	}
 
-	auto &a_v = input.data[0];
-	auto &b_v = input.data[1];
-	auto &a = StructVector::GetEntries(a_v);
-	auto &b = StructVector::GetEntries(b_v);
-
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
-	a[0].ToUnifiedFormat(ax_uf);
-	a[1].ToUnifiedFormat(ay_uf);
-	a[2].ToUnifiedFormat(az_uf);
-	b[0].ToUnifiedFormat(bx_uf);
-	b[1].ToUnifiedFormat(by_uf);
-	b[2].ToUnifiedFormat(bz_uf);
-
-	auto *ax = (const double *)ax_uf.data;
-	auto *ay = (const double *)ay_uf.data;
-	auto *az = (const double *)az_uf.data;
-	auto *bx = (const double *)bx_uf.data;
-	auto *by = (const double *)by_uf.data;
-	auto *bz = (const double *)bz_uf.data;
-
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	FlatVector::SetSize(result, n);
+	FlatVector::SetSize(result, count);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
+	auto &validity = FlatVector::ValidityMutable(result);
+	for (idx_t i = 0; i < count; i++) {
 		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+			bool valid = RowIsValid(a_parent, i) && RowIsValid(b_parent, i);
+			for (std::size_t component = 0; component < N; component++) {
+				valid &= RowIsValid(a_formats[component], i) && RowIsValid(b_formats[component], i);
+			}
+			if (!valid) {
+				validity.SetInvalid(i);
 				continue;
 			}
 		}
-
-		const double axv = ax[ax_uf.sel->get_index(i)];
-		const double ayv = ay[ay_uf.sel->get_index(i)];
-		const double azv = az[az_uf.sel->get_index(i)];
-		const double bxv = bx[bx_uf.sel->get_index(i)];
-		const double byv = by[by_uf.sel->get_index(i)];
-		const double bzv = bz[bz_uf.sel->get_index(i)];
-
-		out[i] = CosAngle3(axv, ayv, azv, bxv, byv, bzv);
+		std::array<double, N> a, b;
+		for (std::size_t component = 0; component < N; component++) {
+			a[component] = a_data[component][a_formats[component].sel->get_index(i)];
+			b[component] = b_data[component][b_formats[component].sel->get_index(i)];
+		}
+		out[i] = VectorAngle<N, FUNCTION>(a, b);
 	}
 }
 
-// vcos_angle(vec4, vec4) -> DOUBLE
+void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::COSINE>(input, result);
+}
+
 void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
+	VAngleFn<4, AngleFunction::COSINE>(input, result);
+}
 
-	auto &a_v = input.data[0];
-	auto &b_v = input.data[1];
-	auto &a = StructVector::GetEntries(a_v);
-	auto &b = StructVector::GetEntries(b_v);
+void VSinAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::SINE>(input, result);
+}
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
-	a[0].ToUnifiedFormat(aw_uf);
-	a[1].ToUnifiedFormat(ax_uf);
-	a[2].ToUnifiedFormat(ay_uf);
-	a[3].ToUnifiedFormat(az_uf);
-	b[0].ToUnifiedFormat(bw_uf);
-	b[1].ToUnifiedFormat(bx_uf);
-	b[2].ToUnifiedFormat(by_uf);
-	b[3].ToUnifiedFormat(bz_uf);
+void VSinAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::SINE>(input, result);
+}
 
-	auto *aw = (const double *)aw_uf.data;
-	auto *ax = (const double *)ax_uf.data;
-	auto *ay = (const double *)ay_uf.data;
-	auto *az = (const double *)az_uf.data;
-	auto *bw = (const double *)bw_uf.data;
-	auto *bx = (const double *)bx_uf.data;
-	auto *by = (const double *)by_uf.data;
-	auto *bz = (const double *)bz_uf.data;
+void VTanAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::TANGENT>(input, result);
+}
 
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	FlatVector::SetSize(result, n);
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
+void VTanAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::TANGENT>(input, result);
+}
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
+void VCotAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::COTANGENT>(input, result);
+}
 
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
-		}
-
-		const double awv = aw[aw_uf.sel->get_index(i)];
-		const double axv = ax[ax_uf.sel->get_index(i)];
-		const double ayv = ay[ay_uf.sel->get_index(i)];
-		const double azv = az[az_uf.sel->get_index(i)];
-		const double bwv = bw[bw_uf.sel->get_index(i)];
-		const double bxv = bx[bx_uf.sel->get_index(i)];
-		const double byv = by[by_uf.sel->get_index(i)];
-		const double bzv = bz[bz_uf.sel->get_index(i)];
-
-		out[i] = CosAngle4(awv, axv, ayv, azv, bwv, bxv, byv, bzv);
-	}
+void VCotAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::COTANGENT>(input, result);
 }
 
 // vangle(vec3, vec3) -> DOUBLE
-void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VCosAngleVec3Fn(input, state, result);
-	const idx_t n = input.size();
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
-			continue;
-		}
-		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
-	}
+void VAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::ANGLE>(input, result);
 }
 
 // vangle(vec4, vec4) -> DOUBLE
-void VAngleVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VCosAngleVec4Fn(input, state, result);
-	const idx_t n = input.size();
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
-			continue;
-		}
-		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
-	}
+void VAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::ANGLE>(input, result);
 }
 
 // vproj(vec3, vec3) -> vec3
