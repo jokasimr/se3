@@ -15,7 +15,8 @@ The script:
 - runs a warm-up query
 - times:
   - `se3_apply(W, p)`
-  - `se3_compose(W, W)` followed by `se3_apply(...)`
+  - `se3_apply(se3_compose(se3_compose(W, W), W), p)`, with the input
+    cross-joined with `range(3)` so the aggregation covers 60M rows
 
 Notes:
 - This benchmark is intentionally heavy; adjust row count in `scripts/parallel_benchmark.sql` if needed.
@@ -77,11 +78,11 @@ Output includes:
 
 ## Comparing extension builds with the CLI
 
-The SQL runners cover different workloads:
-
-- [`benchmark_cli.sql`](../../scripts/benchmark_cli.sql): general vector and transform operations, constant and NULL inputs, and chained calculations.
-- [`benchmark_chained.sql`](../../scripts/benchmark_chained.sql): projection, scaling, addition, subtraction and angles, optionally followed by rotation or transformation.
-- [`benchmark_projection.sql`](../../scripts/benchmark_projection.sql): projection and rejection with ordinary, extreme, mixed and zero inputs.
+| Script | Workload | Default rows | Threads |
+|---|---|---|---|
+| [`benchmark_cli.sql`](../../scripts/benchmark_cli.sql) | Vector and transform operations, constant and NULL inputs, and chained calculations | 10M, 50M and 200M | 1, 4, 16, 64 |
+| [`benchmark_chained.sql`](../../scripts/benchmark_chained.sql) | Projection, scaling, addition, subtraction and angles, optionally followed by rotation or transformation | 10M and 50M | 1, 4, 16, 64 |
+| [`benchmark_projection.sql`](../../scripts/benchmark_projection.sql) | 3D/4D projection and rejection with ordinary, extreme, mixed and zero inputs | 10M | 1 |
 
 Run from the repository root with a Release CLI and `se3` installed or linked in:
 
@@ -90,9 +91,15 @@ Run from the repository root with a Release CLI and `se3` installed or linked in
   < scripts/benchmark_chained.sql > /tmp/se3-chained.log
 ```
 
-Each runner generates data once and reuses it for a warm-up and five measured
-passes. The general and chained suites cover 1, 4, 16 and 64 threads; the
-projection suite uses one thread. Counts and component sums accompany timings.
+Each runner generates data once per CLI process and reuses it across queries.
+Each thread configuration has one warm-up and five measured passes. Queries
+aggregate every result component; counts and sums accompany timings. Dependent
+calculations in chained workloads use successive CTEs.
+
+Compare medians and sample ranges at the same row count and thread count, and
+check that counts and sums agree within floating-point rounding. Timings include
+scanning and aggregation as well as extension execution. When DuckDB versions
+differ, the comparison includes engine changes.
 
 ## Interpreting vector comparisons
 

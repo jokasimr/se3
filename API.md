@@ -22,7 +22,9 @@ A point is translated by `t` first, then rotated by quaternion `q`. Quaternions 
 
 - Except for `se3_identity()`, all functions propagate `NULL` if any required input or required struct field is `NULL`.
 - All calculations use double precision.
-- Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
+- Vector math functions follow floating-point semantics: division by zero is
+  allowed to produce `NaN`/`Inf`, without guards that return `NULL` or raise an error.
+- Non-finite inputs can produce `NaN`/`Inf`.
 - `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
 
 ## Functions
