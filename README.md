@@ -12,13 +12,18 @@ This extension, Se3, provides SE(3) rigid transformations using unit quaternions
 
 ## Building
 
-This version targets DuckDB's `v2.0-cyanoptera` release branch.
+This version targets DuckDB **v2.0.0**. DuckDB and `extension-ci-tools` are Git
+submodules pinned to tested commits; CI uses the same revisions.
 
-Build (recommended):
+Install a C++17 compiler, CMake (3.14 or newer), Python 3, and Make. Then build:
 ```sh
 git submodule update --init --recursive
-GEN=ninja make
+CMAKE_BUILD_PARALLEL_LEVEL=8 make
 ```
+Adjust the parallel job count to your available memory. If Ninja is installed,
+you can use `GEN=ninja make` instead. Use a fresh build directory when switching
+CMake generators. For direct CMake builds, set
+`-DDUCKDB_EXPLICIT_VERSION=v2.0.0` so the extension matches the release CLI.
 The main binaries that will be built are:
 ```sh
 ./build/release/duckdb
