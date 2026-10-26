@@ -3,12 +3,8 @@
 A DuckDB extension for SE(3) rigid transformations, quaternion operations and
 3D/4D vector arithmetic, implemented as DuckDB scalar functions.
 
-A transform has six degrees of freedom and is stored as `STRUCT(t vec3, q quat)`:
-three translation components `t = (x, y, z)` and a four-component unit quaternion
-`q = (w, x, y, z)`, for seven `DOUBLE` values in total.
-
-Sequences of transformations can be composed into a single transform and applied
-to 3D points without calling trigonometric functions.
+* Sequences of transformations can be combined to a 6 DOF transform stored as a 7-scalar struct: 3 translation components plus a 4-component unit quaternion.
+* Combined transformations can be efficiently applied to points in 3D without calling trigonometric functions.
 
 See the [API reference](API.md) for types, functions and composition semantics.
 
@@ -16,22 +12,30 @@ See the [API reference](API.md) for types, functions and composition semantics.
 
 This version targets DuckDB **v2.0.0**.
 
+Build (recommended):
+
 ```sh
 git submodule update --init --recursive
 GEN=ninja make
 ```
 
-Build outputs:
+The main binaries that will be built are:
 
-- `build/release/duckdb`: CLI with `se3` loaded.
-- `build/release/test/unittest`: test runner with `se3` linked in.
-- `build/release/extension/se3/se3.duckdb_extension`: loadable extension.
+```sh
+./build/release/duckdb
+./build/release/test/unittest
+./build/release/extension/se3/se3.duckdb_extension
+```
+
+- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
+- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
+- `se3.duckdb_extension` is the loadable binary as it would be distributed.
 
 ## Running the extension
 
-Start the CLI with `./build/release/duckdb`.
+To run the extension code, simply start the shell with `./build/release/duckdb`.
 
-This example translates a point by `(1, 0, 0)`, then rotates it 90 degrees about Z:
+Now we can use the features from the extension directly in DuckDB. Example (translate, then rotate):
 
 ```sql
 SELECT se3_apply(
@@ -44,9 +48,7 @@ SELECT se3_apply(
 );
 ```
 
-The point `(1, 0, 0)` is first translated by `(1, 0, 0)` to `(2, 0, 0)`.
-Rotating this translated point 90 degrees about Z gives `(0, 2, 0)`
-(roundoff omitted):
+Expected result (first translate the point by (1,0,0) to (2,0,0), then rotate 90° around Z):
 
 ```
 {x: 0.0, y: 2.0, z: 0.0}
@@ -64,7 +66,7 @@ SELECT se3_apply(
 );
 ```
 
-Result (roundoff omitted):
+Expected result (roundoff omitted):
 
 ```
 {x: -3.0, y: 0.0, z: 0.0}

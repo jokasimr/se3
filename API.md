@@ -7,8 +7,7 @@
 - `vec4`: `STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)` (same physical layout as `quat`)
 - `W`: `STRUCT(t vec3, q quat)`
 
-`vec4` and `quat` share the same SQL type. Use vector functions for 4D vectors
-and quaternion functions for rotations.
+`vec4` and `quat` intentionally share the same structure, so DuckDB can accept either where that shape is expected. This is for convenience, not semantic equivalence: use vector functions for vectors and quaternion functions for rotations.
 
 ## Convention
 
@@ -22,19 +21,21 @@ A point is translated by `t` first, then rotated by quaternion `q`. Quaternions 
 
 - Except for `se3_identity()`, all functions propagate `NULL` if any required input or required struct field is `NULL`.
 - All calculations use double precision.
-- Vector math functions follow floating-point semantics: division by zero is
-  allowed to produce `NaN`/`Inf`, without guards that return `NULL` or raise an error.
-- Non-finite inputs can produce `NaN`/`Inf`.
+- Vector math functions follow floating-point semantics and do not add explicit zero-denominator guards.
+- Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
 - `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
 
 ## Functions
 
 ### `vvec(...) -> vec3 | vec4`
-Constructs a 3D or 4D vector.
+Constructs a vector.
 
 Signatures:
 - `vvec(x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec3`
 - `vvec(w: DOUBLE, x: DOUBLE, y: DOUBLE, z: DOUBLE) -> vec4`
+
+Constructs either a `vec3` (`STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`) or a 4D vector
+(`STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`, same layout as `quat`).
 
 ### `vadd(a, b) -> vec3 | vec4`
 Element-wise addition.
@@ -242,7 +243,7 @@ SELECT se3_inv(se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_p
 ```
 
 ### `se3_compose(A, B) -> vec3 | quat | W`
-Applies `B` first, then `A`.
+Composition operator. **Semantics:** apply `B` first, then `A`.
 
 For transforms `W_A = (t_A, q_A)` and `W_B = (t_B, q_B)`, the result has:
 
