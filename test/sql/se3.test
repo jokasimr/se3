@@ -1979,6 +1979,121 @@ SELECT
 ----
 true	true	true	true	true	true
 
+# Projection intermediates may underflow even when the result is a normal double.
+statement ok
+CREATE TABLE projection_scales AS
+SELECT a, b FROM (VALUES
+  (1e-200, 1e150), (1e-170, 1e150),
+  (1e-200, 1e-150), (1e-170, 1e-150),
+  (-1e-200, 1e150), (1e-200, -1e150),
+  (2.0, 3.0)
+) scales(a, b);
+
+query IIII
+SELECT
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(vproj(vvec(a, 0, a), vvec(b, b, 0)), 1/a),
+    vvec(0.5, 0.5, 0))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(vrej(vvec(a, 0, a), vvec(b, b, 0)), 1/a),
+    vvec(0.5, -0.5, 1))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(vproj(vvec(a, 0, a, -a), vvec(b, b, 0, 0)), 1/a),
+    vvec(0.5, 0.5, 0, 0))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(vrej(vvec(a, 0, a, -a), vvec(b, b, 0, 0)), 1/a),
+    vvec(0.5, -0.5, 1, -1))) < 1e-12) IS NOT TRUE)
+FROM projection_scales;
+----
+0	0	0	0
+
+statement ok
+DROP TABLE projection_scales;
+
+statement ok
+CREATE TABLE projection_ranges AS
+SELECT * FROM (VALUES
+  (1e-160, 1e308, 0.0, 1e150, 0.0, 0.0, 1e-160, 0.0, 0.0),
+  (1e-160, 1e308, 0.0, 1e-150, 0.0, 0.0, 1e-160, 0.0, 0.0),
+  (0.0, 1e308, 0.0, 1e308, 1e-160, 0.0, 1e-160, 0.0, 0.0),
+  (1e-200, 1e308, 0.0, 1e150, 0.0, 0.0, 1e-200, 0.0, 0.0),
+  (1e308, 1e308, 0.0, 1e308, 1e308, 0.0, 1e308, 1.0, 0.0),
+  (1e308, 1e308, 1e308, 1e308, 1e308, 1e308, 1e308, 1.0, 1.0),
+  (pow(2.0,1000), -pow(2.0,1000), pow(2.0,1000), pow(2.0,1000), pow(2.0,1000), pow(2.0,-1000),
+    pow(2.0,-1001), 1.0, 0.0)
+) inputs(ax, ay, az, bx, by_, bz, expected, y_ratio, z_ratio);
+
+query IIII
+WITH results AS (
+  SELECT *, vproj(vvec(ax, ay, az), vvec(bx, by_, bz)) AS p3,
+    vrej(vvec(ax, ay, az), vvec(bx, by_, bz)) AS r3,
+    vproj(vvec(ax, ay, az, 0), vvec(bx, by_, bz, 0)) AS p4,
+    vrej(vvec(ax, ay, az, 0), vvec(bx, by_, bz, 0)) AS r4
+  FROM projection_ranges
+)
+SELECT
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(p3, 1/expected), vvec(1, y_ratio, z_ratio))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs((r3.x - (ax - expected)) / greatest(abs(ax), abs(expected))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (vnorm(vsub(vscale(p4, 1/expected), vvec(1, y_ratio, z_ratio, 0))) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs((r4.w - (ax - expected)) / greatest(abs(ax), abs(expected))) < 1e-12) IS NOT TRUE)
+FROM results;
+----
+0	0	0	0
+
+query I
+WITH inputs AS (SELECT pow(2.0,1000) AS large, pow(2.0,-1000) AS small)
+SELECT vnorm(vsub(vscale(vproj(vvec(large, large, -2*large, large), vvec(large, large, large, small)),
+    3*large), vvec(1, 1, 1, 0))) < 1e-12
+FROM inputs;
+----
+true
+
+query IIII
+SELECT vproj(vvec(1, 2, 3), vvec(2, -1, 0)) = vvec(0, 0, 0),
+  vrej(vvec(1, 2, 3), vvec(2, -1, 0)) = vvec(1, 2, 3),
+  vproj(vvec(1, 2, 3, 4), vvec(2, -1, 4, -3)) = vvec(0, 0, 0, 0),
+  vrej(vvec(1, 2, 3, 4), vvec(2, -1, 4, -3)) = vvec(1, 2, 3, 4);
+----
+true	true	true	true
+
+statement ok
+DROP TABLE projection_ranges;
+
+query IIII
+WITH inputs(a) AS (VALUES (1.4e308), (1.7e308), (-1.7e308))
+SELECT
+  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a), vvec(1, 0.5, 0.5)), 1/a),
+    vvec(-1.0/3, 1.0/3, 1.0/3))) < 1e-12),
+  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a, 0), vvec(1, 0.5, 0.5, 0)), 1/a),
+    vvec(-1.0/3, 1.0/3, 1.0/3, 0))) < 1e-12),
+  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a, a), vvec(1, 0.5, 0.5, 0.5)), 1/a),
+    vvec(-3.0/7, 2.0/7, 2.0/7, 2.0/7))) < 1e-12),
+  bool_and(isinf((vproj(vvec(a, a, a), vvec(1, 0.5, 0.5))).x))
+FROM inputs;
+----
+true	true	true	true
+
+query IIII
+WITH inputs(b) AS (VALUES (1e200), (1e-200), (1e-320))
+SELECT
+  bool_and(vproj(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)),
+  bool_and(vrej(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)),
+  bool_and(vproj(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0)),
+  bool_and(vrej(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0))
+FROM inputs;
+----
+true	true	true	true
+
+# Projection components can be subnormal even when all non-zero inputs are normal.
+query IIII
+WITH inputs AS (
+  SELECT pow(2.0, -500) AS a, pow(2.0, 600) AS bx, pow(2.0, 27) AS by_, pow(2.0, -1073) AS expected
+)
+SELECT
+  (vproj(vvec(a, 0, 0), vvec(bx, by_, 0))).y = expected,
+  (vrej(vvec(a, 0, 0), vvec(bx, by_, 0))).y = -expected,
+  (vproj(vvec(a, 0, 0, 0), vvec(bx, by_, 0, 0))).x = expected,
+  (vrej(vvec(a, 0, 0, 0), vvec(bx, by_, 0, 0))).x = -expected
+FROM inputs;
+----
+true	true	true	true
+
 # vcos_angle/vangle should avoid intermediate overflow/underflow for finite non-zero vectors
 query IIIIIIIIIIII
 SELECT
@@ -2005,6 +2120,28 @@ SELECT
   abs(vangle(vvec(1e200, 0.0, 0.0, 0.0), vvec(0.0, 1e200, 0.0, 0.0)) - pi()/2.0) < 1e-12;
 ----
 true	true	true	true
+
+# A normal product of squared norms does not make either squared norm accurate.
+statement ok
+CREATE TABLE angle_scales AS
+SELECT a, b FROM (VALUES
+  (1.6e-162, 1e150), (1e-160, 1e150),
+  (1e150, 1.6e-162), (1e150, 1e-160),
+  (1.0, 1.0)
+) scales(a, b);
+
+query IIII
+SELECT
+  count(*) FILTER (WHERE (abs(vcos_angle(vvec(a, a, 0), vvec(b, 0, 0)) - sqrt(0.5)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vangle(vvec(a, a, 0), vvec(b, 0, 0)) - pi()/4) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vcos_angle(vvec(a, a, 0, 0), vvec(b, 0, 0, 0)) - sqrt(0.5)) < 1e-12) IS NOT TRUE),
+  count(*) FILTER (WHERE (abs(vangle(vvec(a, a, 0, 0), vvec(b, 0, 0, 0)) - pi()/4) < 1e-12) IS NOT TRUE)
+FROM angle_scales;
+----
+0	0	0	0
+
+statement ok
+DROP TABLE angle_scales;
 
 # vangle clamps finite cosine roundoff near +/-1
 query IIII

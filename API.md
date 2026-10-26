@@ -1,7 +1,5 @@
 # se3 API
 
-This document is the source of truth for the extension API.
-
 ## Types
 
 - `vec3`: `STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`
@@ -22,13 +20,14 @@ A point is translated by `t` first, then rotated by quaternion `q`. Quaternions 
 ## Behavioral Notes
 
 - Except for `se3_identity()`, all functions propagate `NULL` if any required input or required struct field is `NULL`.
+- All calculations use double precision.
 - Vector math functions follow floating-point semantics and do not add explicit zero-denominator guards.
 - Zero denominators and non-finite inputs can produce `NaN`/`Inf`.
 - `vcos_angle` returns the raw ratio `vdot(a,b)/(vnorm(a)*vnorm(b))` without clamping.
 
 ## Functions
 
-### `vvec(...) -> ...`
+### `vvec(...) -> vec3 | vec4`
 Constructs a vector.
 
 Signatures:
@@ -38,21 +37,21 @@ Signatures:
 Constructs either a `vec3` (`STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)`) or a 4D vector
 (`STRUCT(w DOUBLE, x DOUBLE, y DOUBLE, z DOUBLE)`, same layout as `quat`).
 
-### `vadd(a, b) -> a`
+### `vadd(a, b) -> vec3 | vec4`
 Element-wise addition.
 
 Signatures:
 - `vadd(a: vec3, b: vec3) -> vec3`
 - `vadd(a: vec4, b: vec4) -> vec4`
 
-### `vsub(a, b) -> a`
+### `vsub(a, b) -> vec3 | vec4`
 Element-wise subtraction (`a - b`).
 
 Signatures:
 - `vsub(a: vec3, b: vec3) -> vec3`
 - `vsub(a: vec4, b: vec4) -> vec4`
 
-### `vscale(a, s) -> a`
+### `vscale(a, s) -> vec3 | vec4`
 Scalar multiplication (`a * s`).
 
 Signatures:
@@ -80,7 +79,7 @@ Signatures:
 - `vnorm(a: vec3) -> DOUBLE`
 - `vnorm(a: vec4) -> DOUBLE`
 
-### `vnormalize(a) -> a`
+### `vnormalize(a) -> vec3 | vec4`
 Unit normalization (`a / vnorm(a)`).
 
 Signatures:
@@ -106,14 +105,14 @@ Signatures:
 - `vangle(a: vec3, b: vec3) -> DOUBLE`
 - `vangle(a: vec4, b: vec4) -> DOUBLE`
 
-### `vproj(a, b) -> b`
+### `vproj(a, b) -> vec3 | vec4`
 Vector projection of `a` onto `b`.
 
 Signatures:
 - `vproj(a: vec3, b: vec3) -> vec3`
 - `vproj(a: vec4, b: vec4) -> vec4`
 
-### `vrej(a, b) -> a`
+### `vrej(a, b) -> vec3 | vec4`
 Vector rejection of `a` from `b`:
 `a - vproj(a, b)`.
 
@@ -203,7 +202,7 @@ Signatures:
 - `se3_apply(q: quat, p: vec3) -> vec3`  
   Rotate: `R_q(p)`.
 
-Example (rotate + translate):
+Examples: full transform (translation then rotation), translation, and rotation.
 ```sql
 SELECT se3_apply(
   se3_from_axis_angle(
@@ -225,7 +224,7 @@ SELECT se3_apply(
 );
 ```
 
-### `se3_inv(x) -> x`
+### `se3_inv(x) -> vec3 | quat | W`
 Inverse of a translation, rotation, or transform.
 
 Signatures:
@@ -243,8 +242,18 @@ SELECT se3_inv(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.
 SELECT se3_inv(se3_from_axis_angle(struct_pack(x:=1.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), pi()/2.0));
 ```
 
-### `se3_compose(A, B) -> ...`
+### `se3_compose(A, B) -> vec3 | quat | W`
 Composition operator. **Semantics:** apply `B` first, then `A`.
+
+For transforms `W_A = (t_A, q_A)` and `W_B = (t_B, q_B)`, the result has:
+
+```text
+q = q_A ⊗ q_B
+t = t_B + R_{q_B}^{-1}(t_A)
+```
+
+Here `⊗` is quaternion multiplication and `R_{q_B}^{-1}` is the inverse rotation
+of `q_B`. The translation formula follows the convention `W(p) = R_q(p + t)`.
 
 Signatures:
 - `se3_compose(W2: W, W1: W) -> W`  
