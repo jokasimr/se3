@@ -999,6 +999,59 @@ void VAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	VAngleFn<4, AngleFunction::ANGLE>(input, result);
 }
 
+// Combine flat masks directly. Check selected components together so each row
+// stops at its first NULL, without constructing a mask for every component.
+static ValidityMask ProjectionValidity(DataChunk &input) {
+	const idx_t count = input.size();
+	ValidityMask validity(count);
+	vector<VectorValidityIterator> selected;
+	auto combine = [&](const Vector &value) {
+		if (value.GetVectorType() == VectorType::FLAT_VECTOR) {
+			validity.Combine(FlatVector::Validity(value), count);
+		} else if (value.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			ValidityMask constant(count);
+			constant.Combine(value, count);
+			validity.Combine(constant, count);
+		} else {
+			auto entries = value.Validity();
+			if (entries.CanHaveNull()) {
+				selected.push_back(std::move(entries));
+			}
+		}
+	};
+	for (auto &value : input.data) {
+		combine(value);
+		for (const auto &child : StructVector::GetEntries(value)) {
+			combine(child);
+		}
+	}
+	if (selected.empty() || validity.CheckAllInvalid(count)) {
+		return validity;
+	}
+
+	// Flat masks may be shared with inputs; copy before marking selected rows NULL.
+	ValidityMask combined(validity, count);
+	for (idx_t i = 0; i < count; i++) {
+		if (!validity.RowIsValid(i)) {
+			continue;
+		}
+		for (const auto &entries : selected) {
+			if (!entries.IsValid(i)) {
+				combined.SetInvalid(i);
+				break;
+			}
+		}
+	}
+	return combined;
+}
+
+static void SetProjectionValidity(Vector &result, const ValidityMask &validity) {
+	FlatVector::SetValidity(result, validity);
+	for (auto &child : StructVector::GetEntries(result)) {
+		FlatVector::SetValidity(child, validity);
+	}
+}
+
 // vproj(vec3, vec3) -> vec3
 void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
@@ -1012,14 +1065,18 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -1037,18 +1094,11 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double axv = ax[ax_uf.sel->get_index(i)];
@@ -1065,14 +1115,18 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -1094,20 +1148,11 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double awv = aw[aw_uf.sel->get_index(i)];
@@ -1126,14 +1171,18 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -1151,18 +1200,11 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double axv = ax[ax_uf.sel->get_index(i)];
@@ -1179,14 +1221,18 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -1208,20 +1254,11 @@ void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double awv = aw[aw_uf.sel->get_index(i)];
