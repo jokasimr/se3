@@ -1,0 +1,235 @@
+# name: test/sql/function_optimizations.test
+# description: Constant axis-angle arguments and component reuse across vector layouts
+# group: [sql]
+
+require se3
+
+# Exercise constant arguments at runtime, including full and partial chunks.
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+statement ok
+CREATE TABLE constructor_inputs AS
+SELECT i, CASE WHEN i % 2 = 0 THEN 1.0 ELSE -1.0 END AS sign,
+       vvec(0, 0, sign * CASE i % 4 WHEN 0 THEN 1.0 WHEN 1 THEN 1e300
+                                  WHEN 2 THEN 1e-300 ELSE 1e-320 END) AS axis,
+       (i % 17 - 8) * 0.125 AS theta, vvec(i, -2*i, i*0.5) AS t
+FROM range(8197) r(i);
+
+foreach axis axis vvec(0,0,2)
+
+foreach angle theta 0.75
+
+foreach mode flat selected
+
+# Analytical rotations about the z axis, with either or both arguments constant.
+query IIIII
+WITH results AS MATERIALIZED (
+  SELECT i, t, quat_from_axis_angle({axis}, {angle}) AS q,
+         se3_from_axis_angle(t, {axis}, {angle}) AS w,
+         cos(0.5 * {angle}) AS c,
+         sin(0.5 * {angle}) * CASE WHEN '{axis}' = 'axis' THEN sign ELSE 1.0 END AS s
+  FROM constructor_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE (abs(q.w-c) < 1e-14 AND q.x=0 AND q.y=0 AND abs(q.z-s) < 1e-14) IS NOT TRUE),
+       count(*) FILTER (WHERE w.t IS DISTINCT FROM t),
+       count(*) FILTER (WHERE w.q IS DISTINCT FROM q),
+       count(*) FILTER (WHERE se3_make(w.t, w.q) IS DISTINCT FROM w),
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
+FROM results;
+----
+0	0	0	0	true
+
+endloop
+
+endloop
+
+endloop
+
+# A constant translation and quaternion must retain the full result cardinality.
+query III
+WITH results AS MATERIALIZED (
+  SELECT se3_from_axis_angle(vvec(1,2,3), vvec(0,0,2), 0.75) AS w
+  FROM range(8197)
+)
+SELECT count(*), count(*) FILTER (WHERE w.t IS DISTINCT FROM vvec(1,2,3)),
+       count(*) FILTER (WHERE (abs(w.q.w-cos(0.375)) < 1e-14 AND w.q.x=0 AND w.q.y=0
+                              AND abs(w.q.z-sin(0.375)) < 1e-14) IS NOT TRUE)
+FROM results;
+----
+8197	0	0
+
+# Zero axes and NULL axes/fields return a whole NULL quaternion and transform.
+
+foreach axis vvec(0,0,0) vvec(NULL,1,2) struct_pack(x:=1.0,y:=NULL,z:=2.0)
+
+foreach angle theta 0.75
+
+query IIII
+WITH results AS MATERIALIZED (
+  SELECT quat_from_axis_angle({axis}, {angle}) AS q,
+         se3_from_axis_angle(t, {axis}, {angle}) AS w
+  FROM constructor_inputs WHERE i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE q IS NOT NULL), count(*) FILTER (WHERE w IS NOT NULL),
+       count(*) FILTER (WHERE q.w IS NOT NULL), count(*) FILTER (WHERE w.t.x IS NOT NULL)
+FROM results;
+----
+0	0	0	0
+
+endloop
+
+endloop
+
+foreach axis axis vvec(0,0,2)
+
+query III
+SELECT count(*) FILTER (WHERE quat_from_axis_angle({axis}, NULL) IS NOT NULL),
+       count(*) FILTER (WHERE se3_from_axis_angle(t, {axis}, NULL) IS NOT NULL),
+       count(*) FILTER (WHERE se3_from_axis_angle(struct_pack(x:=NULL,y:=2.0,z:=3.0), {axis}, theta) IS NOT NULL)
+FROM constructor_inputs;
+----
+0	0	0
+
+endloop
+
+# Parent NULLs, child NULLs and zero axes alternate within and across chunks.
+statement ok
+CREATE TABLE nullable_constructors AS
+SELECT i,
+       CASE WHEN i % 8 = 0 THEN NULL ELSE
+         struct_pack(x := CASE WHEN i % 8 = 1 THEN NULL ELSE 0.0 END,
+                     y := CASE WHEN i % 8 = 2 THEN NULL ELSE 0.0 END,
+                     z := CASE WHEN i % 8 = 3 THEN NULL WHEN i % 8 = 4 THEN 0.0 ELSE 2.0 END) END AS axis,
+       CASE WHEN i % 8 = 5 THEN NULL ELSE 0.75 END AS theta,
+       CASE WHEN i % 8 = 6 THEN NULL ELSE
+         struct_pack(x := CASE WHEN i % 8 = 7 THEN NULL ELSE i::DOUBLE END, y := 2.0, z := 3.0) END AS t
+FROM range(8197) r(i);
+
+query IIIIII
+SELECT count(*) FILTER (WHERE (quat_from_axis_angle(axis,theta) IS NULL) IS DISTINCT FROM (i % 8 <= 5)),
+       count(*) FILTER (WHERE se3_from_axis_angle(t,axis,theta) IS NOT NULL),
+       count(*) FILTER (WHERE (quat_from_axis_angle(axis,0.75) IS NULL) IS DISTINCT FROM (i % 8 <= 4)),
+       count(*) FILTER (WHERE (se3_from_axis_angle(t,axis,0.75) IS NULL) IS DISTINCT FROM (i % 8 <> 5)),
+       count(*) FILTER (WHERE (se3_from_axis_angle(t,vvec(0,0,2),theta) IS NULL) IS DISTINCT FROM (i % 8 >= 5)),
+       count(*) FILTER (WHERE (se3_from_axis_angle(t,vvec(0,0,2),0.75) IS NULL) IS DISTINCT FROM (i % 8 >= 6))
+FROM nullable_constructors WHERE i % 3 <> 1;
+----
+0	0	0	0	0	0
+
+# Nullable translations must produce whole NULL transforms for every argument layout.
+# Include an entirely NULL chunk followed by valid rows and a partial final chunk.
+statement ok
+CREATE TABLE nullable_translations AS
+SELECT i, (i BETWEEN 2048 AND 4095 OR i % 8 < 4) AS invalid,
+       CASE WHEN i BETWEEN 2048 AND 4095 OR i % 8 = 0 THEN NULL ELSE
+         struct_pack(x := CASE WHEN i % 8 = 1 THEN NULL ELSE i::DOUBLE END,
+                     y := CASE WHEN i % 8 = 2 THEN NULL ELSE 2.0 END,
+                     z := CASE WHEN i % 8 = 3 THEN NULL ELSE 3.0 END) END AS t,
+       vvec(2,-3,6) AS axis, 0.75::DOUBLE AS theta
+FROM range(8197) r(i);
+
+foreach axis axis vvec(2,-3,6)
+
+foreach angle theta 0.75
+
+foreach mode flat selected
+
+query IIIII
+WITH results AS MATERIALIZED (
+  SELECT *, se3_from_axis_angle(t, {axis}, {angle}) AS w
+  FROM nullable_translations WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE (w IS NULL) IS DISTINCT FROM invalid),
+       count(*) FILTER (WHERE invalid AND
+         (w.t IS NOT NULL OR w.q IS NOT NULL OR w.t.x IS NOT NULL OR w.t.y IS NOT NULL OR w.t.z IS NOT NULL OR
+          w.q.w IS NOT NULL OR w.q.x IS NOT NULL OR w.q.y IS NOT NULL OR w.q.z IS NOT NULL)),
+       count(*) FILTER (WHERE NOT invalid AND w.t IS DISTINCT FROM t),
+       count(*) FILTER (WHERE NOT invalid AND
+         (abs(w.q.w-cos(0.375)) < 1e-14 AND abs(w.q.x-sin(0.375)*2/7) < 1e-14 AND
+          abs(w.q.y+sin(0.375)*3/7) < 1e-14 AND abs(w.q.z-sin(0.375)*6/7) < 1e-14) IS NOT TRUE),
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
+FROM results;
+----
+0	0	0	0	true
+
+endloop
+
+endloop
+
+endloop
+
+# Non-finite inputs retain raw floating-point behavior; only a zero axis returns NULL.
+query IIIIII
+SELECT isnan(quat_from_axis_angle(vvec(1,0,0), 'inf'::DOUBLE).w),
+       isnan(quat_from_axis_angle(vvec('inf'::DOUBLE,0,0), 0.75).x),
+       quat_from_axis_angle(vvec('inf'::DOUBLE,0,0), 0.75).w = cos(0.375),
+       quat_from_axis_angle(vvec(0,0,0), 'inf'::DOUBLE) IS NULL,
+       se3_from_axis_angle(vvec(1,2,3), vvec(0,0,0), 'nan'::DOUBLE) IS NULL,
+       isnan(se3_from_axis_angle(vvec(1,2,3), vvec(1,0,0), 'nan'::DOUBLE).q.z);
+----
+true	true	true	true	true	true
+
+# Stored non-unit quaternions verify that these optimizations do not normalize inputs.
+statement ok
+CREATE TABLE component_inputs AS
+SELECT i, vvec(i+1, 2, -3, 4) AS q, vvec(0,0,0,i+2) AS r,
+       vvec(i,2*i,-i) AS t, se3_make(t,q) AS w
+FROM range(8197) r(i);
+
+foreach mode flat selected
+
+query IIIIIIIIIII
+SELECT
+  count(*) FILTER (WHERE qconj(q) IS DISTINCT FROM vvec(i+1,-2,3,-4)),
+  count(*) FILTER (WHERE se3_inv(q) IS DISTINCT FROM vvec(i+1,-2,3,-4)),
+  count(*) FILTER (WHERE se3_inv(t) IS DISTINCT FROM vvec(-i,-2*i,i)),
+  count(*) FILTER (WHERE qmul(q,r) IS DISTINCT FROM vvec(-4*(i+2),-3*(i+2),-2*(i+2),(i+1)*(i+2))),
+  count(*) FILTER (WHERE se3_compose(q,r) IS DISTINCT FROM qmul(q,r)),
+  count(*) FILTER (WHERE se3_compose(r,w) IS DISTINCT FROM
+    se3_make(t,vvec(-4*(i+2),3*(i+2),2*(i+2),(i+1)*(i+2)))),
+  count(*) FILTER (WHERE se3_compose(w,t) IS DISTINCT FROM se3_make(vvec(2*i,4*i,-2*i),q)),
+  count(*) FILTER (WHERE vdot(q,q) IS DISTINCT FROM (i+1)::DOUBLE*(i+1)+29),
+  count(*) FILTER (WHERE vnorm2(q) IS DISTINCT FROM (i+1)::DOUBLE*(i+1)+29),
+  count(*) FILTER (WHERE qnorm2(q) IS DISTINCT FROM (i+1)::DOUBLE*(i+1)+29),
+  count(*) FILTER (WHERE (abs(vnorm(vnormalize(q))-1.0) < 1e-14) IS NOT TRUE)
+FROM component_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1;
+----
+0	0	0	0	0	0	0	0	0	0	0
+
+endloop
+
+# Referenced components survive constant/mixed inputs and materialized nested results.
+query IIII
+WITH results AS MATERIALIZED (
+  SELECT i, qconj(vvec(1,q.x,q.y,q.z)) AS conjugate,
+         se3_compose(vvec(0,0,0,1),w) AS rotated,
+         se3_compose(w,vvec(1,2,3)) AS translated,
+         se3_compose(se3_make(vvec(1,2,3),vvec(2,3,4,5)),t) AS fixed
+  FROM component_inputs WHERE i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE conjugate IS DISTINCT FROM vvec(1,-2,3,-4)),
+       count(*) FILTER (WHERE rotated IS DISTINCT FROM se3_make(vvec(i,2*i,-i),vvec(-4,3,2,i+1))),
+       count(*) FILTER (WHERE translated IS DISTINCT FROM se3_make(vvec(i+1,2*i+2,-i+3),vvec(i+1,2,-3,4))),
+       count(*) FILTER (WHERE fixed IS DISTINCT FROM se3_make(vvec(i+1,2*i+2,-i+3),vvec(2,3,4,5)))
+FROM results;
+----
+0	0	0	0
+
+# Negation preserves signed zero and non-finite values.
+# Prevent the optimizer from merging expressions that differ only by zero's sign.
+statement ok
+SET disabled_optimizers = 'expression_rewriter,common_subexpressions';
+
+query IIIIII
+SELECT 1.0/qconj(vvec('-0.0'::DOUBLE,0,'-0.0'::DOUBLE,0)).w = '-inf'::DOUBLE,
+       1.0/qconj(vvec(1,0,'-0.0'::DOUBLE,0)).x = '-inf'::DOUBLE,
+       1.0/qconj(vvec(1,0,'-0.0'::DOUBLE,0)).y = 'inf'::DOUBLE,
+       1.0/se3_inv(vvec(0,0,0)).x = '-inf'::DOUBLE,
+       qconj(vvec(1,'inf'::DOUBLE,0,0)).x = '-inf'::DOUBLE,
+       isnan(se3_inv(vvec('nan'::DOUBLE,0,0)).x);
+----
+true	true	true	true	true	true
+
+statement ok
+RESET disabled_optimizers;
