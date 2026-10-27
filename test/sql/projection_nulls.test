@@ -1,0 +1,186 @@
+# name: test/sql/projection_nulls.test
+# description: Projection and rejection validity across chunks and vector layouts
+# group: [sql]
+
+require se3
+
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+# The first chunk is entirely invalid, with NULLs split between two components.
+# Later chunks mix parent/component NULLs on both operands and valid rows.
+statement ok
+CREATE TABLE projection_inputs AS
+WITH rows AS (
+  SELECT i, CASE WHEN i < 2048 THEN CASE WHEN i % 2 = 0 THEN 2 ELSE 7 END
+                 WHEN i >= 8192 THEN 11 ELSE i % 12 END AS c
+  FROM range(8197) r(i)
+)
+SELECT i, c,
+       CASE WHEN c = 0 THEN NULL ELSE
+         struct_pack(x := CASE WHEN c = 2 THEN NULL ELSE i::DOUBLE END,
+                     y := CASE WHEN c = 3 THEN NULL ELSE 2.0 END,
+                     z := CASE WHEN c = 4 THEN NULL ELSE -3.0 END) END AS a3,
+       CASE WHEN c = 5 THEN NULL ELSE
+         struct_pack(x := CASE WHEN c = 7 THEN NULL ELSE 2.0 END,
+                     y := CASE WHEN c = 8 THEN NULL ELSE 0.0 END,
+                     z := CASE WHEN c = 9 THEN NULL ELSE 0.0 END) END AS b3,
+       CASE WHEN c = 0 THEN NULL ELSE
+         struct_pack(w := CASE WHEN c = 1 THEN NULL ELSE i::DOUBLE END,
+                     x := CASE WHEN c = 2 THEN NULL ELSE 2.0 END,
+                     y := CASE WHEN c = 3 THEN NULL ELSE -3.0 END,
+                     z := CASE WHEN c = 4 THEN NULL ELSE 4.0 END) END AS a4,
+       CASE WHEN c = 5 THEN NULL ELSE
+         struct_pack(w := CASE WHEN c = 6 THEN NULL ELSE 2.0 END,
+                     x := CASE WHEN c = 7 THEN NULL ELSE 0.0 END,
+                     y := CASE WHEN c = 8 THEN NULL ELSE 0.0 END,
+                     z := CASE WHEN c = 9 THEN NULL ELSE 0.0 END) END AS b4,
+       c IN (0,2,3,4,5,7,8,9) AS invalid3, c < 10 AS invalid4,
+       vvec(i,0,0) AS vproj3, vvec(0,2,-3) AS vrej3,
+       vvec(i,0,0,0) AS vproj4, vvec(0,2,-3,4) AS vrej4
+FROM rows;
+
+foreach fn vproj vrej
+
+foreach dim 3 4
+
+foreach mode flat selected
+
+query IIII
+WITH results AS MATERIALIZED (
+  SELECT *, {fn}(a{dim},b{dim}) AS v
+  FROM projection_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE (v IS NULL) IS DISTINCT FROM invalid{dim}),
+       count(*) FILTER (WHERE invalid{dim} AND
+         (v.x IS NOT NULL OR v.y IS NOT NULL OR v.z IS NOT NULL OR
+          struct_extract(v, CASE WHEN '{dim}' = '3' THEN 'x' ELSE 'w' END) IS NOT NULL)),
+       count(*) FILTER (WHERE NOT invalid{dim} AND v IS DISTINCT FROM {fn}{dim}),
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
+FROM results;
+----
+0	0	0	true
+
+endloop
+
+endloop
+
+# Constant components mixed with selected nullable components must not mutate
+# the input masks. Check the original values after evaluating both functions.
+query IIII
+WITH results AS MATERIALIZED (
+  SELECT *, {fn}(a3,struct_pack(x:=2.0,y:=b3.y,z:=b3.z)) AS v3,
+         {fn}(a4,struct_pack(w:=2.0,x:=b4.x,y:=b4.y,z:=b4.z)) AS v4
+  FROM projection_inputs WHERE i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE (v3 IS NULL) IS DISTINCT FROM (c IN (0,2,3,4,5,8,9))),
+       count(*) FILTER (WHERE (v4 IS NULL) IS DISTINCT FROM (c IN (0,1,2,3,4,5,7,8,9))),
+       count(*) FILTER (WHERE (a3.x IS NULL) IS DISTINCT FROM (c IN (0,2))),
+       count(*) FILTER (WHERE (b4.x IS NULL) IS DISTINCT FROM (c IN (5,7)))
+FROM results;
+----
+0	0	0	0
+
+# A constant NULL component makes every result NULL, including a partial chunk.
+foreach side left right
+
+foreach mode flat selected
+
+query IIIIIIII
+WITH results AS MATERIALIZED (
+  SELECT c, a3, b4, CASE WHEN '{side}' = 'left'
+              THEN {fn}(struct_pack(x:=NULL::DOUBLE,y:=2.0,z:=3.0),b3)
+              ELSE {fn}(a3,struct_pack(x:=2.0,y:=NULL::DOUBLE,z:=0.0)) END AS v3,
+         CASE WHEN '{side}' = 'left'
+              THEN {fn}(struct_pack(w:=1.0,x:=2.0,y:=NULL::DOUBLE,z:=3.0),b4)
+              ELSE {fn}(a4,struct_pack(w:=2.0,x:=0.0,y:=0.0,z:=NULL::DOUBLE)) END AS v4
+  FROM projection_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END,
+       count(v3), count(v4), count(v3.x), count(v4.w), count(v4.z),
+       count(*) FILTER (WHERE (a3.x IS NULL) IS DISTINCT FROM (c IN (0,2))),
+       count(*) FILTER (WHERE (b4.w IS NULL) IS DISTINCT FROM (c IN (5,6)))
+FROM results;
+----
+true	0	0	0	0	0	0	0
+
+endloop
+
+endloop
+
+# Valid constant operands and mixed constant/selected components.
+query IIIII
+WITH results AS MATERIALIZED (
+  SELECT i, {fn}(vvec(i,2,-3),vvec(2,0,0)) AS v3,
+         {fn}(vvec(i,2,-3,4),vvec(2,0,0,0)) AS v4,
+         {fn}(vvec(6,2,-3),vvec(2+i%2,0,0)) AS fixed3,
+         {fn}(vvec(6,2,-3,4),vvec(2+i%2,0,0,0)) AS fixed4,
+         {fn}3 AS expected3, {fn}4 AS expected4
+  FROM projection_inputs WHERE i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE v3 IS DISTINCT FROM expected3),
+       count(*) FILTER (WHERE v4 IS DISTINCT FROM expected4),
+       count(*) FILTER (WHERE fixed3 IS DISTINCT FROM
+         CASE WHEN '{fn}' = 'vproj' THEN vvec(6,0,0) ELSE vvec(0,2,-3) END),
+       count(*) FILTER (WHERE fixed4 IS DISTINCT FROM
+         CASE WHEN '{fn}' = 'vproj' THEN vvec(6,0,0,0) ELSE vvec(0,2,-3,4) END),
+       count(*)
+FROM results;
+----
+0	0	0	0	5465
+
+endloop
+
+# Independent component NULLs exercise early exits at every component, as well
+# as valid rows. Selection must preserve both the results and the input masks.
+statement ok
+CREATE TABLE projection_components AS
+SELECT i,
+       struct_pack(x:=CASE WHEN i & 1 <> 0 THEN NULL ELSE i::DOUBLE END,
+                   y:=CASE WHEN i & 2 <> 0 THEN NULL ELSE 2.0 END,
+                   z:=CASE WHEN i & 4 <> 0 THEN NULL ELSE -3.0 END) AS a3,
+       struct_pack(x:=CASE WHEN i & 8 <> 0 THEN NULL ELSE 2.0 END,
+                   y:=CASE WHEN i & 16 <> 0 THEN NULL ELSE 0.0 END,
+                   z:=CASE WHEN i & 32 <> 0 THEN NULL ELSE 0.0 END) AS b3,
+       struct_pack(w:=CASE WHEN i & 1 <> 0 THEN NULL ELSE i::DOUBLE END,
+                   x:=CASE WHEN i & 2 <> 0 THEN NULL ELSE 2.0 END,
+                   y:=CASE WHEN i & 4 <> 0 THEN NULL ELSE -3.0 END,
+                   z:=CASE WHEN i & 8 <> 0 THEN NULL ELSE 4.0 END) AS a4,
+       struct_pack(w:=CASE WHEN i & 16 <> 0 THEN NULL ELSE 2.0 END,
+                   x:=CASE WHEN i & 32 <> 0 THEN NULL ELSE 0.0 END,
+                   y:=CASE WHEN i & 64 <> 0 THEN NULL ELSE 0.0 END,
+                   z:=CASE WHEN i & 128 <> 0 THEN NULL ELSE 0.0 END) AS b4
+FROM range(8197) r(i);
+
+foreach fn vproj vrej
+
+foreach mode flat selected
+
+query IIIIIII
+WITH results AS MATERIALIZED (
+  SELECT *, {fn}(a3,b3) AS v3, {fn}(a4,b4) AS v4
+  FROM projection_components WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE v3 IS DISTINCT FROM
+         CASE WHEN i & 63 <> 0 THEN NULL
+              WHEN '{fn}' = 'vproj' THEN vvec(i,0,0) ELSE vvec(0,2,-3) END),
+       count(*) FILTER (WHERE v4 IS DISTINCT FROM
+         CASE WHEN i & 255 <> 0 THEN NULL
+              WHEN '{fn}' = 'vproj' THEN vvec(i,0,0,0) ELSE vvec(0,2,-3,4) END),
+       count(*) FILTER (WHERE i & 63 <> 0 AND
+         (v3.x IS NOT NULL OR v3.y IS NOT NULL OR v3.z IS NOT NULL)),
+       count(*) FILTER (WHERE i & 255 <> 0 AND
+         (v4.w IS NOT NULL OR v4.x IS NOT NULL OR v4.y IS NOT NULL OR v4.z IS NOT NULL)),
+       count(*) FILTER (WHERE (a3.x IS NULL) IS DISTINCT FROM (i & 1 <> 0)),
+       count(*) FILTER (WHERE (b4.z IS NULL) IS DISTINCT FROM (i & 128 <> 0)),
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
+FROM results;
+----
+0	0	0	0	0	0	true
+
+endloop
+
+endloop
+
+statement ok
+RESET disabled_optimizers;

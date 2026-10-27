@@ -101,76 +101,131 @@ static inline bool AllFinite4(double w, double x, double y, double z) {
 	return std::isfinite(w) && std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
 }
 
-static inline double ScaledCosAngle3(double ax, double ay, double az, double bx, double by, double bz) {
-	const double ascale = MaxAbs3(ax, ay, az);
-	const double bscale = MaxAbs3(bx, by, bz);
-	const double sax = ax / ascale;
-	const double say = ay / ascale;
-	const double saz = az / ascale;
-	const double sbx = bx / bscale;
-	const double sby = by / bscale;
-	const double sbz = bz / bscale;
+enum class AngleFunction { COSINE, SINE, TANGENT, COTANGENT, ANGLE };
 
-	const double dot = sax * sbx + say * sby + saz * sbz;
-	const double na2 = sax * sax + say * say + saz * saz;
-	const double nb2 = sbx * sbx + sby * sby + sbz * sbz;
-	return dot / std::sqrt(na2 * nb2);
+template <std::size_t N>
+static inline double AngleDot(const std::array<double, N> &a, const std::array<double, N> &b) {
+	// Starting with a product rather than +0 preserves an all-negative-zero sum.
+	double dot = a[0] * b[0];
+	for (std::size_t i = 1; i < N; i++) {
+		dot += a[i] * b[i];
+	}
+	return dot;
 }
 
-static inline double ScaledCosAngle4(double aw, double ax, double ay, double az, double bw, double bx, double by,
-                                     double bz) {
-	const double ascale = MaxAbs4(aw, ax, ay, az);
-	const double bscale = MaxAbs4(bw, bx, by, bz);
-	const double saw = aw / ascale;
-	const double sax = ax / ascale;
-	const double say = ay / ascale;
-	const double saz = az / ascale;
-	const double sbw = bw / bscale;
-	const double sbx = bx / bscale;
-	const double sby = by / bscale;
-	const double sbz = bz / bscale;
-
-	const double dot = saw * sbw + sax * sbx + say * sby + saz * sbz;
-	const double na2 = saw * saw + sax * sax + say * say + saz * saz;
-	const double nb2 = sbw * sbw + sbx * sbx + sby * sby + sbz * sbz;
-	return dot / std::sqrt(na2 * nb2);
+template <std::size_t N>
+static inline std::array<double, N *(N - 1) / 2> AngleMinors(const std::array<double, N> &a,
+                                                             const std::array<double, N> &b) {
+	std::array<double, N *(N - 1) / 2> minors;
+	std::size_t index = 0;
+	for (std::size_t i = 0; i < N; i++) {
+		for (std::size_t j = i + 1; j < N; j++) {
+			// Kahan's difference of products: recover the rounding error in the
+			// second product before adding it to the fused subtraction.
+			// https://perso.ens-lyon.fr/jean-michel.muller/AnalysisCornea_final.pdf
+			const double product = a[j] * b[i];
+			const double error = std::fma(-a[j], b[i], product);
+			minors[index++] = std::fma(a[i], b[j], -product) + error;
+		}
+	}
+	return minors;
 }
 
-static inline double CosAngle3(double ax, double ay, double az, double bx, double by, double bz) {
-	const double dot = ax * bx + ay * by + az * bz;
-	const double na2 = ax * ax + ay * ay + az * az;
-	const double nb2 = bx * bx + by * by + bz * bz;
-	const double denom = std::sqrt(na2 * nb2);
-	if (na2 >= DBL_MIN_NORMAL && nb2 >= DBL_MIN_NORMAL && denom >= SQRT_DBL_MIN && std::isfinite(denom) &&
-	    std::isfinite(dot)) {
-		return dot / denom;
+template <std::size_t N>
+static double AngleNorm(const std::array<double, N> &values) {
+	// Only used for minors of scaled vectors: finite values cannot overflow
+	// when squared, but a small area can still underflow.
+	const double norm2 = AngleDot(values, values);
+	if (norm2 >= DBL_MIN_NORMAL || !std::isfinite(norm2)) {
+		return std::sqrt(norm2);
 	}
-	return ScaledCosAngle3(ax, ay, az, bx, by, bz);
+	// Squaring a tiny, representable component can underflow.
+	double scale = 0.0;
+	for (const auto value : values) {
+		scale = std::max(scale, std::fabs(value));
+	}
+	if (scale == 0.0) {
+		return 0.0;
+	}
+	double scaled_norm2 = 0.0;
+	for (const auto value : values) {
+		const double scaled = value / scale;
+		scaled_norm2 += scaled * scaled;
+	}
+	return scale * std::sqrt(scaled_norm2);
 }
 
-static inline double CosAngle4(double aw, double ax, double ay, double az, double bw, double bx, double by, double bz) {
-	const double dot = aw * bw + ax * bx + ay * by + az * bz;
-	const double na2 = aw * aw + ax * ax + ay * ay + az * az;
-	const double nb2 = bw * bw + bx * bx + by * by + bz * bz;
-	const double denom = std::sqrt(na2 * nb2);
-	if (na2 >= DBL_MIN_NORMAL && nb2 >= DBL_MIN_NORMAL && denom >= SQRT_DBL_MIN && std::isfinite(denom) &&
-	    std::isfinite(dot)) {
-		return dot / denom;
+template <AngleFunction FUNCTION>
+static inline double AngleFromGeometry(double area, double dot, double norm_product) {
+	if constexpr (FUNCTION == AngleFunction::COSINE) {
+		return dot / std::sqrt(norm_product);
+	} else if constexpr (FUNCTION == AngleFunction::SINE) {
+		return area / std::sqrt(norm_product);
+	} else if constexpr (FUNCTION == AngleFunction::TANGENT) {
+		return area / dot;
+	} else if constexpr (FUNCTION == AngleFunction::COTANGENT) {
+		return dot / area;
+	} else {
+		return std::atan2(area, dot);
 	}
-	return ScaledCosAngle4(aw, ax, ay, az, bw, bx, by, bz);
 }
 
-static inline double ClampFiniteCosAngle(double x) {
-	if (!std::isfinite(x)) {
-		return x;
+template <std::size_t N, AngleFunction FUNCTION>
+static inline double VectorAngle(const std::array<double, N> &a, const std::array<double, N> &b) {
+	if constexpr (FUNCTION == AngleFunction::COSINE) {
+		const double dot = AngleDot(a, b);
+		const double na2 = AngleDot(a, a), nb2 = AngleDot(b, b);
+		const double denom = std::sqrt(na2 * nb2);
+		if (na2 >= DBL_MIN_NORMAL && nb2 >= DBL_MIN_NORMAL && denom >= SQRT_DBL_MIN && std::isfinite(denom) &&
+		    std::isfinite(dot)) {
+			return dot / denom;
+		}
+	} else {
+		const auto minors = AngleMinors(a, b);
+		const double area2 = AngleDot(minors, minors);
+		if (area2 >= DBL_MIN_NORMAL && std::isfinite(area2)) {
+			if constexpr (FUNCTION == AngleFunction::SINE) {
+				const double na2 = AngleDot(a, a), nb2 = AngleDot(b, b);
+				const double norm_product = na2 * nb2;
+				const double sine2 = area2 / norm_product;
+				if (na2 >= DBL_MIN_NORMAL && nb2 >= DBL_MIN_NORMAL && norm_product >= DBL_MIN_NORMAL &&
+				    std::isfinite(norm_product) && sine2 >= DBL_MIN_NORMAL) {
+					// One square root suffices while the squared ratio is normal.
+					return std::sqrt(sine2);
+				}
+			} else {
+				const double dot = AngleDot(a, b);
+				if (std::isfinite(dot)) {
+					return AngleFromGeometry<FUNCTION>(std::sqrt(area2), dot, 0.0);
+				}
+			}
+		}
 	}
-	if (x > 1.0) {
-		return 1.0;
+
+	// Rescale each vector when intermediate magnitudes are unsafe.
+	// Zero or non-finite vectors naturally propagate NaN through this
+	// arithmetic. Dot products retain ordinary double rounding/cancellation.
+	double ascale = 0.0, bscale = 0.0;
+	for (std::size_t i = 0; i < N; i++) {
+		ascale = std::max(ascale, std::fabs(a[i]));
+		bscale = std::max(bscale, std::fabs(b[i]));
 	}
-	if (x < -1.0) {
-		return -1.0;
+	std::array<double, N> sa, sb;
+	for (std::size_t i = 0; i < N; i++) {
+		sa[i] = a[i] / ascale;
+		sb[i] = b[i] / bscale;
 	}
-	return x;
+	double area = 0.0, dot = 0.0, norm_product = 0.0;
+	if constexpr (FUNCTION != AngleFunction::COSINE) {
+		area = AngleNorm(AngleMinors(sa, sb));
+	}
+	if constexpr (FUNCTION != AngleFunction::SINE) {
+		dot = AngleDot(sa, sb);
+	}
+	if constexpr (FUNCTION == AngleFunction::COSINE || FUNCTION == AngleFunction::SINE) {
+		norm_product = AngleDot(sa, sa) * AngleDot(sb, sb);
+	}
+	return AngleFromGeometry<FUNCTION>(area, dot, norm_product);
 }
 
 static inline double ScaledNorm3(double x, double y, double z, double scale) {

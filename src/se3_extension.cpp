@@ -140,6 +140,27 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    {FunctionMeta({"a", "b"}, "Returns vdot(a, b) / (vnorm(a) * vnorm(b)) without clamping.",
 	                  {"vcos_angle(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))"}, {"vector"})});
 
+	RegisterScalarFunctions(
+	    loader, "vsin_angle",
+	    {ScalarFunction("vsin_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VSinAngleVec3Fn),
+	     ScalarFunction("vsin_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VSinAngleVec4Fn)},
+	    {FunctionMeta({"a", "b"}, "Returns the sine of the angle between a and b.",
+	                  {"vsin_angle(vvec(1.0, 0.0, 0.0), vvec(0.0, 1.0, 0.0))"}, {"vector"})});
+
+	RegisterScalarFunctions(
+	    loader, "vtan_angle",
+	    {ScalarFunction("vtan_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VTanAngleVec3Fn),
+	     ScalarFunction("vtan_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VTanAngleVec4Fn)},
+	    {FunctionMeta({"a", "b"}, "Returns the tangent of the angle between a and b.",
+	                  {"vtan_angle(vvec(1.0, 0.0, 0.0), vvec(1.0, 1.0, 0.0))"}, {"vector"})});
+
+	RegisterScalarFunctions(
+	    loader, "vcot_angle",
+	    {ScalarFunction("vcot_angle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VCotAngleVec3Fn),
+	     ScalarFunction("vcot_angle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VCotAngleVec4Fn)},
+	    {FunctionMeta({"a", "b"}, "Returns the cotangent of the angle between a and b.",
+	                  {"vcot_angle(vvec(1.0, 0.0, 0.0), vvec(1.0, 1.0, 0.0))"}, {"vector"})});
+
 	RegisterScalarFunctions(loader, "vangle",
 	                        {ScalarFunction("vangle", {Vec3Type(), Vec3Type()}, LogicalType::DOUBLE, VAngleVec3Fn),
 	                         ScalarFunction("vangle", {QuatType(), QuatType()}, LogicalType::DOUBLE, VAngleVec4Fn)},

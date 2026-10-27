@@ -2,10 +2,12 @@
 #include "se3_math.hpp"
 
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 
 #include <functional>
 #include <initializer_list>
@@ -132,17 +134,19 @@ struct FlatQuat {
 	const double *w, *x, *y, *z;
 };
 
-template <class RESULT, class OP, class... INPUTS>
-static bool TryExecuteFlatVec3(Vector &result, idx_t count, OP operation, const INPUTS &...inputs) {
+template <class READER, class RESULT, class OP, class... INPUTS>
+static bool TryExecuteFlat(Vector &result, idx_t count, OP operation, const INPUTS &...inputs) {
 	if (!(IsFlatAndValid(inputs) && ...)) {
 		return false;
 	}
-	auto readers = std::make_tuple(FlatVec3(inputs)...);
+	auto readers = std::make_tuple(READER(inputs)...);
 	auto writer = FlatVector::Writer<RESULT>(result, count);
 	for (idx_t i = 0; i < count; i++) {
 		auto value = std::apply([&](const auto &...reader) { return operation(reader[i]...); }, readers);
 		if constexpr (std::is_same<RESULT, Vec3Vector>::value) {
 			WriteVec3(writer, value);
+		} else if constexpr (std::is_same<RESULT, QuatVector>::value) {
+			WriteQuat(writer, value);
 		} else {
 			writer.WriteValue(value);
 		}
@@ -230,6 +234,25 @@ static bool TryExecuteComponentwise(const Vector &a, const Vector &b, Vector &re
 	for (idx_t child = 0; child < output.size(); child++) {
 		BinaryExecutor::Execute<double, double, double>(left[child], right ? (*right)[child] : b, output[child], count,
 		                                                operation);
+	}
+	return true;
+}
+
+// Conjugation preserves the scalar component; translation inversion negates all components.
+static bool TryNegateComponents(const Vector &input, Vector &result, idx_t count, idx_t first_negated) {
+	if (!CannotHaveNullComponents(input)) {
+		return false;
+	}
+	PrepareStructChildrenFlat(result, count);
+	const auto &source = StructVector::GetEntries(input);
+	auto &target = StructVector::GetEntries(result);
+	for (idx_t component = 0; component < target.size(); component++) {
+		if (component < first_negated) {
+			target[component].Reference(source[component]);
+		} else {
+			UnaryExecutor::Execute<double, double>(source[component], target[component], count,
+			                                       [](double value) { return -value; });
+		}
 	}
 	return true;
 }
@@ -408,7 +431,7 @@ void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vdot(vec3, vec3) -> DOUBLE
 void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<double>(
+	if (TryExecuteFlat<FlatVec3, double>(
 	        result, n, [](Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }, input.data[0],
 	        input.data[1])) {
 		return;
@@ -463,6 +486,11 @@ void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vdot(vec4, vec4) -> DOUBLE
 void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryExecuteFlat<FlatQuat, double>(
+	        result, n, [](Quat a, Quat b) { return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z; }, input.data[0],
+	        input.data[1])) {
+		return;
+	}
 
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
@@ -520,7 +548,7 @@ void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnorm2(vec3) -> DOUBLE
 void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<double>(
+	if (TryExecuteFlat<FlatVec3, double>(
 	        result, n, [](Vec3 a) { return a.x * a.x + a.y * a.y + a.z * a.z; }, input.data[0])) {
 		return;
 	}
@@ -563,6 +591,10 @@ void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnorm2(vec4) -> DOUBLE
 void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryExecuteFlat<FlatQuat, double>(
+	        result, n, [](Quat a) { return a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z; }, input.data[0])) {
+		return;
+	}
 
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
@@ -607,7 +639,7 @@ void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnorm(vec3) -> DOUBLE
 void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<double>(
+	if (TryExecuteFlat<FlatVec3, double>(
 	        result, n, [](Vec3 a) { return Norm3(a.x, a.y, a.z); }, input.data[0])) {
 		return;
 	}
@@ -650,6 +682,10 @@ void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnorm(vec4) -> DOUBLE
 void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryExecuteFlat<FlatQuat, double>(
+	        result, n, [](Quat a) { return Norm4(a.w, a.x, a.y, a.z); }, input.data[0])) {
+		return;
+	}
 
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
@@ -694,7 +730,7 @@ void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnormalize(vec3) -> vec3
 void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<Vec3Vector>(
+	if (TryExecuteFlat<FlatVec3, Vec3Vector>(
 	        result, n,
 	        [](Vec3 a) {
 		        Vec3 normalized;
@@ -742,6 +778,16 @@ void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vnormalize(vec4) -> vec4
 void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryExecuteFlat<FlatQuat, QuatVector>(
+	        result, n,
+	        [](Quat a) {
+		        Quat normalized;
+		        Normalize4(a.w, a.x, a.y, a.z, normalized.w, normalized.x, normalized.y, normalized.z);
+		        return normalized;
+	        },
+	        input.data[0])) {
+		return;
+	}
 
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
@@ -785,7 +831,7 @@ void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vcross(vec3, vec3) -> vec3
 void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<Vec3Vector>(
+	if (TryExecuteFlat<FlatVec3, Vec3Vector>(
 	        result, n,
 	        [](Vec3 a, Vec3 b) {
 		        return Vec3 {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
@@ -846,156 +892,163 @@ void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
-// vcos_angle(vec3, vec3) -> DOUBLE
-void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
-	if (TryExecuteFlatVec3<double>(
-	        result, n, [](Vec3 a, Vec3 b) { return CosAngle3(a.x, a.y, a.z, b.x, b.y, b.z); }, input.data[0],
-	        input.data[1])) {
-		return;
+template <std::size_t N, AngleFunction FUNCTION>
+static void VAngleFn(DataChunk &input, Vector &result) {
+	const idx_t count = input.size();
+	if constexpr (N == 3) {
+		if (TryExecuteFlat<FlatVec3, double>(
+		        result, count,
+		        [](Vec3 a, Vec3 b) {
+			        return VectorAngle<3, FUNCTION>({a.x, a.y, a.z}, {b.x, b.y, b.z});
+		        },
+		        input.data[0], input.data[1])) {
+			return;
+		}
+	} else {
+		if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+			const FlatQuat a(input.data[0]), b(input.data[1]);
+			auto writer = FlatVector::Writer<double>(result, count);
+			for (idx_t i = 0; i < count; i++) {
+				const auto av = a[i], bv = b[i];
+				writer.WriteValue(VectorAngle<4, FUNCTION>({av.w, av.x, av.y, av.z}, {bv.w, bv.x, bv.y, bv.z}));
+			}
+			return;
+		}
+	}
+	auto &a_vector = input.data[0];
+	auto &b_vector = input.data[1];
+	auto &a_children = StructVector::GetEntries(a_vector);
+	auto &b_children = StructVector::GetEntries(b_vector);
+	UnifiedVectorFormat a_parent, b_parent;
+	a_vector.ToUnifiedFormat(a_parent);
+	b_vector.ToUnifiedFormat(b_parent);
+	std::array<UnifiedVectorFormat, N> a_formats, b_formats;
+	std::array<const double *, N> a_data, b_data;
+	bool all_valid = a_parent.validity.CannotHaveNull() && b_parent.validity.CannotHaveNull();
+	for (std::size_t component = 0; component < N; component++) {
+		a_children[component].ToUnifiedFormat(a_formats[component]);
+		b_children[component].ToUnifiedFormat(b_formats[component]);
+		a_data[component] = UnifiedVectorFormat::GetData<double>(a_formats[component]);
+		b_data[component] = UnifiedVectorFormat::GetData<double>(b_formats[component]);
+		all_valid &= a_formats[component].validity.CannotHaveNull() && b_formats[component].validity.CannotHaveNull();
 	}
 
-	auto &a_v = input.data[0];
-	auto &b_v = input.data[1];
-	auto &a = StructVector::GetEntries(a_v);
-	auto &b = StructVector::GetEntries(b_v);
-
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
-	a[0].ToUnifiedFormat(ax_uf);
-	a[1].ToUnifiedFormat(ay_uf);
-	a[2].ToUnifiedFormat(az_uf);
-	b[0].ToUnifiedFormat(bx_uf);
-	b[1].ToUnifiedFormat(by_uf);
-	b[2].ToUnifiedFormat(bz_uf);
-
-	auto *ax = (const double *)ax_uf.data;
-	auto *ay = (const double *)ay_uf.data;
-	auto *az = (const double *)az_uf.data;
-	auto *bx = (const double *)bx_uf.data;
-	auto *by = (const double *)by_uf.data;
-	auto *bz = (const double *)bz_uf.data;
-
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	FlatVector::SetSize(result, n);
+	FlatVector::SetSize(result, count);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
+	auto &validity = FlatVector::ValidityMutable(result);
+	for (idx_t i = 0; i < count; i++) {
 		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
+			bool valid = RowIsValid(a_parent, i) && RowIsValid(b_parent, i);
+			for (std::size_t component = 0; component < N; component++) {
+				valid &= RowIsValid(a_formats[component], i) && RowIsValid(b_formats[component], i);
+			}
+			if (!valid) {
+				validity.SetInvalid(i);
 				continue;
 			}
 		}
-
-		const double axv = ax[ax_uf.sel->get_index(i)];
-		const double ayv = ay[ay_uf.sel->get_index(i)];
-		const double azv = az[az_uf.sel->get_index(i)];
-		const double bxv = bx[bx_uf.sel->get_index(i)];
-		const double byv = by[by_uf.sel->get_index(i)];
-		const double bzv = bz[bz_uf.sel->get_index(i)];
-
-		out[i] = CosAngle3(axv, ayv, azv, bxv, byv, bzv);
+		std::array<double, N> a, b;
+		for (std::size_t component = 0; component < N; component++) {
+			a[component] = a_data[component][a_formats[component].sel->get_index(i)];
+			b[component] = b_data[component][b_formats[component].sel->get_index(i)];
+		}
+		out[i] = VectorAngle<N, FUNCTION>(a, b);
 	}
 }
 
-// vcos_angle(vec4, vec4) -> DOUBLE
+void VCosAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::COSINE>(input, result);
+}
+
 void VCosAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
+	VAngleFn<4, AngleFunction::COSINE>(input, result);
+}
 
-	auto &a_v = input.data[0];
-	auto &b_v = input.data[1];
-	auto &a = StructVector::GetEntries(a_v);
-	auto &b = StructVector::GetEntries(b_v);
+void VSinAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::SINE>(input, result);
+}
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
-	a[0].ToUnifiedFormat(aw_uf);
-	a[1].ToUnifiedFormat(ax_uf);
-	a[2].ToUnifiedFormat(ay_uf);
-	a[3].ToUnifiedFormat(az_uf);
-	b[0].ToUnifiedFormat(bw_uf);
-	b[1].ToUnifiedFormat(bx_uf);
-	b[2].ToUnifiedFormat(by_uf);
-	b[3].ToUnifiedFormat(bz_uf);
+void VSinAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::SINE>(input, result);
+}
 
-	auto *aw = (const double *)aw_uf.data;
-	auto *ax = (const double *)ax_uf.data;
-	auto *ay = (const double *)ay_uf.data;
-	auto *az = (const double *)az_uf.data;
-	auto *bw = (const double *)bw_uf.data;
-	auto *bx = (const double *)bx_uf.data;
-	auto *by = (const double *)by_uf.data;
-	auto *bz = (const double *)bz_uf.data;
+void VTanAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::TANGENT>(input, result);
+}
 
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	FlatVector::SetSize(result, n);
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
+void VTanAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::TANGENT>(input, result);
+}
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
+void VCotAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::COTANGENT>(input, result);
+}
 
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
-		}
-
-		const double awv = aw[aw_uf.sel->get_index(i)];
-		const double axv = ax[ax_uf.sel->get_index(i)];
-		const double ayv = ay[ay_uf.sel->get_index(i)];
-		const double azv = az[az_uf.sel->get_index(i)];
-		const double bwv = bw[bw_uf.sel->get_index(i)];
-		const double bxv = bx[bx_uf.sel->get_index(i)];
-		const double byv = by[by_uf.sel->get_index(i)];
-		const double bzv = bz[bz_uf.sel->get_index(i)];
-
-		out[i] = CosAngle4(awv, axv, ayv, azv, bwv, bxv, byv, bzv);
-	}
+void VCotAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::COTANGENT>(input, result);
 }
 
 // vangle(vec3, vec3) -> DOUBLE
-void VAngleVec3Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VCosAngleVec3Fn(input, state, result);
-	const idx_t n = input.size();
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
-			continue;
-		}
-		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
-	}
+void VAngleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<3, AngleFunction::ANGLE>(input, result);
 }
 
 // vangle(vec4, vec4) -> DOUBLE
-void VAngleVec4Fn(DataChunk &input, ExpressionState &state, Vector &result) {
-	VCosAngleVec4Fn(input, state, result);
-	const idx_t n = input.size();
-	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
-	for (idx_t i = 0; i < n; i++) {
-		if (!out_validity.RowIsValid(i)) {
+void VAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
+	VAngleFn<4, AngleFunction::ANGLE>(input, result);
+}
+
+// Combine flat masks directly. Check selected components together so each row
+// stops at its first NULL, without constructing a mask for every component.
+static ValidityMask ProjectionValidity(DataChunk &input) {
+	const idx_t count = input.size();
+	ValidityMask validity(count);
+	vector<VectorValidityIterator> selected;
+	auto combine = [&](const Vector &value) {
+		if (value.GetVectorType() == VectorType::FLAT_VECTOR) {
+			validity.Combine(FlatVector::Validity(value), count);
+		} else if (value.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			ValidityMask constant(count);
+			constant.Combine(value, count);
+			validity.Combine(constant, count);
+		} else {
+			auto entries = value.Validity();
+			if (entries.CanHaveNull()) {
+				selected.push_back(std::move(entries));
+			}
+		}
+	};
+	for (auto &value : input.data) {
+		combine(value);
+		for (const auto &child : StructVector::GetEntries(value)) {
+			combine(child);
+		}
+	}
+	if (selected.empty() || validity.CheckAllInvalid(count)) {
+		return validity;
+	}
+
+	// Flat masks may be shared with inputs; copy before marking selected rows NULL.
+	ValidityMask combined(validity, count);
+	for (idx_t i = 0; i < count; i++) {
+		if (!validity.RowIsValid(i)) {
 			continue;
 		}
-		out[i] = std::acos(ClampFiniteCosAngle(out[i]));
+		for (const auto &entries : selected) {
+			if (!entries.IsValid(i)) {
+				combined.SetInvalid(i);
+				break;
+			}
+		}
+	}
+	return combined;
+}
+
+static void SetProjectionValidity(Vector &result, const ValidityMask &validity) {
+	FlatVector::SetValidity(result, validity);
+	for (auto &child : StructVector::GetEntries(result)) {
+		FlatVector::SetValidity(child, validity);
 	}
 }
 
@@ -1012,14 +1065,18 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -1037,18 +1094,11 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double axv = ax[ax_uf.sel->get_index(i)];
@@ -1065,14 +1115,18 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -1094,20 +1148,11 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double awv = aw[aw_uf.sel->get_index(i)];
@@ -1126,14 +1171,18 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -1151,18 +1200,11 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double axv = ax[ax_uf.sel->get_index(i)];
@@ -1179,14 +1221,18 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
 
+	auto validity = ProjectionValidity(input);
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -1208,20 +1254,11 @@ void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
+	SetProjectionValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double awv = aw[aw_uf.sel->get_index(i)];
@@ -1236,13 +1273,80 @@ void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
-// quat_from_axis_angle(axis:vec3, th:DOUBLE) -> quat
-void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
+// Constant arguments are evaluated once per chunk, including NULL and zero axes.
+template <bool CONSTANT_AXIS, bool CONSTANT_ANGLE>
+static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector &result, idx_t count) {
+	auto axes = axis.Values<Vec3Vector>();
+	auto angles = angle.Values<double>();
+	auto read_axis = [&](idx_t i, Vec3 &unit) {
+		Vec3 value;
+		if (!ReadVec3<false>(axes[i], value) || (value.x == 0.0 && value.y == 0.0 && value.z == 0.0)) {
+			return false;
+		}
+		Normalize3(value.x, value.y, value.z, unit.x, unit.y, unit.z);
+		return true;
+	};
+	auto read_angle = [&](idx_t i, double &sine, double &cosine) {
+		auto entry = angles[i];
+		if (!entry.IsValid()) {
+			return false;
+		}
+		const double half = 0.5 * entry.GetValue();
+		sine = std::sin(half);
+		cosine = std::cos(half);
+		return true;
+	};
+	Vec3 unit;
+	double sine, cosine;
+	if constexpr (CONSTANT_AXIS) {
+		if (!read_axis(0, unit)) {
+			ConstantVector::SetNull(result, count_t(count));
+			return;
+		}
+	}
+	if constexpr (CONSTANT_ANGLE) {
+		if (!read_angle(0, sine, cosine)) {
+			ConstantVector::SetNull(result, count_t(count));
+			return;
+		}
+	}
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, count, ow, ox, oy, oz);
+	const idx_t iterations = CONSTANT_AXIS && CONSTANT_ANGLE ? 1 : count;
+	for (idx_t i = 0; i < iterations; i++) {
+		if ((!CONSTANT_AXIS && !read_axis(i, unit)) || (!CONSTANT_ANGLE && !read_angle(i, sine, cosine))) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+		ow[i] = cosine;
+		ox[i] = unit.x * sine;
+		oy[i] = unit.y * sine;
+		oz[i] = unit.z * sine;
+	}
+	if constexpr (CONSTANT_AXIS && CONSTANT_ANGLE) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
 
-	auto &axis_v = input.data[0];
+static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector &result, idx_t count) {
+	if (axis.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		if (angle.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			AxisAngleQuaternion<true, true>(axis, angle, result, count);
+		} else {
+			AxisAngleQuaternion<true, false>(axis, angle, result, count);
+		}
+		return;
+	}
+	if (angle.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		AxisAngleQuaternion<false, true>(axis, angle, result, count);
+		return;
+	}
+
+	const idx_t n = count;
+
+	auto &axis_v = axis;
 	auto &axis_ent = StructVector::GetEntries(axis_v);
-	auto &th_v = input.data[1];
+	auto &th_v = angle;
 
 	UnifiedVectorFormat axis_uf, ax_uf, ay_uf, az_uf, th_uf;
 	axis_v.ToUnifiedFormat(axis_uf);
@@ -1286,81 +1390,55 @@ void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
+// quat_from_axis_angle(axis:vec3, th:DOUBLE) -> quat
+void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
+	AxisAngleQuaternion(input.data[0], input.data[1], result, input.size());
+}
+
+static Quat MultiplyQuaternions(Quat a, Quat b) {
+	Quat result;
+	QMul(a.w, a.x, a.y, a.z, b.w, b.x, b.y, b.z, result.w, result.x, result.y, result.z);
+	return result;
+}
+
+template <bool ALL_VALID>
+static void MultiplyQuaternionRows(const Vector &a, const Vector &b, Vector &result, idx_t count) {
+	auto left = a.Values<QuatVector>();
+	auto right = b.Values<QuatVector>();
+	auto writer = FlatVector::Writer<QuatVector>(result, count);
+	for (idx_t i = 0; i < count; i++) {
+		Quat av, bv;
+		if (!ReadQuat<ALL_VALID>(left[i], av) || !ReadQuat<ALL_VALID>(right[i], bv)) {
+			writer.WriteNull();
+			continue;
+		}
+		WriteQuat(writer, MultiplyQuaternions(av, bv));
+	}
+}
+
+static void MultiplyQuaternions(const Vector &a, const Vector &b, Vector &result, idx_t count) {
+	if (TryExecuteFlat<FlatQuat, QuatVector>(
+	        result, count, [](Quat av, Quat bv) { return MultiplyQuaternions(av, bv); }, a, b)) {
+		return;
+	}
+	if (CannotHaveNullComponents(a) && CannotHaveNullComponents(b)) {
+		MultiplyQuaternionRows<true>(a, b, result, count);
+	} else {
+		MultiplyQuaternionRows<false>(a, b, result, count);
+	}
+}
+
 // qmul(qA,qB) -> quat
 void QMulFn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
-
-	auto &a_v = input.data[0];
-	auto &b_v = input.data[1];
-	auto &a = StructVector::GetEntries(a_v);
-	auto &b = StructVector::GetEntries(b_v);
-
-	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf;
-	UnifiedVectorFormat bw_uf, bx_uf, by_uf, bz_uf;
-	UnifiedVectorFormat a_uf, b_uf;
-
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
-	a[0].ToUnifiedFormat(aw_uf);
-	a[1].ToUnifiedFormat(ax_uf);
-	a[2].ToUnifiedFormat(ay_uf);
-	a[3].ToUnifiedFormat(az_uf);
-
-	b[0].ToUnifiedFormat(bw_uf);
-	b[1].ToUnifiedFormat(bx_uf);
-	b[2].ToUnifiedFormat(by_uf);
-	b[3].ToUnifiedFormat(bz_uf);
-
-	auto *aw = (const double *)aw_uf.data;
-	auto *aw_sel = aw_uf.sel;
-	auto *ax = (const double *)ax_uf.data;
-	auto *ax_sel = ax_uf.sel;
-	auto *ay = (const double *)ay_uf.data;
-	auto *ay_sel = ay_uf.sel;
-	auto *az = (const double *)az_uf.data;
-	auto *az_sel = az_uf.sel;
-
-	auto *bw = (const double *)bw_uf.data;
-	auto *bw_sel = bw_uf.sel;
-	auto *bx = (const double *)bx_uf.data;
-	auto *bx_sel = bx_uf.sel;
-	auto *by = (const double *)by_uf.data;
-	auto *by_sel = by_uf.sel;
-	auto *bz = (const double *)bz_uf.data;
-	auto *bz_sel = bz_uf.sel;
-
-	double *ow, *ox, *oy, *oz;
-	PrepareQuatOut(result, n, ow, ox, oy, oz);
-
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
-		}
-		double rw, rx, ry, rz;
-		QMul(aw[aw_sel->get_index(i)], ax[ax_sel->get_index(i)], ay[ay_sel->get_index(i)], az[az_sel->get_index(i)],
-		     bw[bw_sel->get_index(i)], bx[bx_sel->get_index(i)], by[by_sel->get_index(i)], bz[bz_sel->get_index(i)], rw,
-		     rx, ry, rz);
-		ow[i] = rw;
-		ox[i] = rx;
-		oy[i] = ry;
-		oz[i] = rz;
-	}
+	MultiplyQuaternions(input.data[0], input.data[1], result, input.size());
 }
 
 // qconj(q) -> quat
 void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryNegateComponents(input.data[0], result, n, 1)) {
+		return;
+	}
 	auto &q_v = input.data[0];
 	auto &q = StructVector::GetEntries(q_v);
 
@@ -1493,74 +1571,33 @@ void Se3MakeFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 // se3_from_axis_angle(t, axis, th) -> W
 void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
-	const idx_t n = input.size();
+	const idx_t count = input.size();
+	const bool constant_rotation = input.data[1].GetVectorType() == VectorType::CONSTANT_VECTOR &&
+	                               input.data[2].GetVectorType() == VectorType::CONSTANT_VECTOR;
+	if (CannotHaveNullComponents(input.data[0]) || constant_rotation) {
+		Vector quaternion(StructVector::GetEntries(result)[1].GetType(), count);
+		AxisAngleQuaternion(input.data[1], input.data[2], quaternion, count);
+		MakeTransform(input.data[0], quaternion, result, count);
+		return;
+	}
 
-	auto &t_v = input.data[0];
-	auto &axis_v = input.data[1];
-	auto &t = StructVector::GetEntries(t_v);
-	auto &axis = StructVector::GetEntries(axis_v);
-	auto &th_v = input.data[2];
-
-	UnifiedVectorFormat tx_uf, ty_uf, tz_uf;
-	UnifiedVectorFormat ax_uf, ay_uf, az_uf, th_uf;
-	UnifiedVectorFormat t_uf, axis_uf;
-
-	t_v.ToUnifiedFormat(t_uf);
-	axis_v.ToUnifiedFormat(axis_uf);
-	t[0].ToUnifiedFormat(tx_uf);
-	t[1].ToUnifiedFormat(ty_uf);
-	t[2].ToUnifiedFormat(tz_uf);
-
-	axis[0].ToUnifiedFormat(ax_uf);
-	axis[1].ToUnifiedFormat(ay_uf);
-	axis[2].ToUnifiedFormat(az_uf);
-	th_v.ToUnifiedFormat(th_uf);
-
-	auto *itx = (const double *)tx_uf.data;
-	auto *itx_sel = tx_uf.sel;
-	auto *ity = (const double *)ty_uf.data;
-	auto *ity_sel = ty_uf.sel;
-	auto *itz = (const double *)tz_uf.data;
-	auto *itz_sel = tz_uf.sel;
-
-	auto *ax = (const double *)ax_uf.data;
-	auto *ax_sel = ax_uf.sel;
-	auto *ay = (const double *)ay_uf.data;
-	auto *ay_sel = ay_uf.sel;
-	auto *az = (const double *)az_uf.data;
-	auto *az_sel = az_uf.sel;
-	auto *th = (const double *)th_uf.data;
-	auto *th_sel = th_uf.sel;
-
-	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
-
-	const bool all_valid =
-	    t_uf.validity.CannotHaveNull() && axis_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
-	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	    ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() && th_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(t_uf, i) || !RowIsValid(axis_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
-			    !RowIsValid(tz_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
-			    !RowIsValid(th_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
-		}
-		const double thv = th[th_sel->get_index(i)];
-		const double axv = ax[ax_sel->get_index(i)];
-		const double ayv = ay[ay_sel->get_index(i)];
-		const double azv = az[az_sel->get_index(i)];
-		if (!AxisAngleToQuat(axv, ayv, azv, thv, oqw[i], oqx[i], oqy[i], oqz[i])) {
+	// Skip invalid translations before normalizing axes or evaluating trigonometric functions.
+	auto translations = input.data[0].Values<Vec3Vector>();
+	auto axes = input.data[1].Values<Vec3Vector>();
+	auto angles = input.data[2].Values<double>();
+	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+	PrepareWOut(result, count, tx, ty, tz, qw, qx, qy, qz);
+	for (idx_t i = 0; i < count; i++) {
+		Vec3 translation, axis;
+		auto angle = angles[i];
+		if (!ReadVec3<false>(translations[i], translation) || !ReadVec3<false>(axes[i], axis) || !angle.IsValid() ||
+		    !AxisAngleToQuat(axis.x, axis.y, axis.z, angle.GetValue(), qw[i], qx[i], qy[i], qz[i])) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
-
-		otx[i] = itx[itx_sel->get_index(i)];
-		oty[i] = ity[ity_sel->get_index(i)];
-		otz[i] = itz[itz_sel->get_index(i)];
+		tx[i] = translation.x;
+		ty[i] = translation.y;
+		tz[i] = translation.z;
 	}
 }
 
@@ -1692,6 +1729,9 @@ void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 // se3_inv(t) -> t (negation)
 void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryNegateComponents(input.data[0], result, n, 0)) {
+		return;
+	}
 
 	auto &t_v = input.data[0];
 	auto &t = StructVector::GetEntries(t_v);
@@ -2018,6 +2058,14 @@ void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) {
 // se3_compose(q, W) -> W (apply W then q)
 void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1])) {
+		const auto &transform = StructVector::GetEntries(input.data[1]);
+		PrepareStructChildrenFlat(result, n);
+		auto &output = StructVector::GetEntries(result);
+		output[0].Reference(transform[0]);
+		MultiplyQuaternions(input.data[0], transform[1], output[1], n);
+		return;
+	}
 
 	auto &q_v = input.data[0];
 	auto &w_v = input.data[1];
@@ -2108,6 +2156,14 @@ void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) {
 // se3_compose(W, t) -> W (apply t then W)
 void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1])) {
+		const auto &transform = StructVector::GetEntries(input.data[0]);
+		PrepareStructChildrenFlat(result, n);
+		auto &output = StructVector::GetEntries(result);
+		AddVec3(transform[0], input.data[1], output[0], n);
+		output[1].Reference(transform[1]);
+		return;
+	}
 
 	auto &w_v = input.data[0];
 	auto &t_v = input.data[1];
