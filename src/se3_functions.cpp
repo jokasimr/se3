@@ -18,45 +18,99 @@ namespace duckdb {
 namespace se3 {
 
 // ------------------------- Validity helpers -------------------------
-static inline bool RowIsValid(const UnifiedVectorFormat &uf, idx_t i) {
-	return uf.validity.RowIsValid(uf.sel->get_index(i));
+// The returned mask may share input storage: copy it before modifying its bits.
+// Combine flat masks directly. Check selected components together so each row
+// stops at its first NULL, without constructing a mask for every component.
+static ValidityMask InputValidity(idx_t count, std::initializer_list<const Vector *> inputs) {
+	ValidityMask validity(count);
+	vector<VectorValidityIterator> selected;
+	auto combine = [&](auto &&self, const Vector &value) -> void {
+		if (value.GetVectorType() == VectorType::FLAT_VECTOR) {
+			validity.Combine(FlatVector::Validity(value), count);
+		} else if (value.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			ValidityMask constant(count);
+			constant.Combine(value, count);
+			validity.Combine(constant, count);
+		} else {
+			auto entries = value.Validity();
+			if (entries.CanHaveNull()) {
+				selected.push_back(std::move(entries));
+			}
+		}
+		if (value.GetType().InternalType() == PhysicalType::STRUCT) {
+			for (const auto &child : StructVector::GetEntries(value)) {
+				self(self, child);
+			}
+		}
+	};
+	for (const auto *value : inputs) {
+		combine(combine, *value);
+	}
+	if (selected.empty() || validity.CheckAllInvalid(count)) {
+		return validity;
+	}
+
+	// Flat masks may be shared with inputs; copy before marking selected rows NULL.
+	ValidityMask combined(validity, count);
+	// Gather each word in a register instead of updating a mask bit per NULL.
+	for (idx_t base = 0; base < count; base += ValidityMask::BITS_PER_VALUE) {
+		const idx_t entry = base / ValidityMask::BITS_PER_VALUE;
+		const auto original = validity.GetValidityEntry(entry);
+		auto word = original;
+		validity_t bit = 1;
+		const auto end = MinValue(count, base + ValidityMask::BITS_PER_VALUE);
+		for (idx_t i = base; i < end; i++, bit <<= 1) {
+			if (!(word & bit)) {
+				continue;
+			}
+			for (const auto &entries : selected) {
+				if (!entries.IsValid(i)) {
+					word &= ~bit;
+					break;
+				}
+			}
+		}
+		if (word != original) {
+			combined.EnsureWritable();
+			combined.GetValidityEntryUnsafe(entry) = word;
+		}
+	}
+	return combined;
+}
+
+// Result buffers must be independent of the inputs before assigning validity.
+static void SetResultValidity(Vector &result, const ValidityMask &validity) {
+	FlatVector::SetValidity(result, validity);
+	if (result.GetType().InternalType() == PhysicalType::STRUCT) {
+		for (auto &child : StructVector::GetEntries(result)) {
+			SetResultValidity(child, validity);
+		}
+	}
 }
 
 using Vec3Vector = VectorStructType<double, double, double>;
 using QuatVector = VectorStructType<double, double, double, double>;
 using TransformVector = VectorStructType<Vec3Vector, QuatVector>;
 
-template <bool ALL_VALID>
-static inline bool ReadVec3(const VectorIterator<Vec3Vector>::ValueEntry &entry, Vec3 &value) {
+// Callers establish complete row validity before reading components.
+static inline void ReadVec3(const VectorIterator<Vec3Vector>::ValueEntry &entry, Vec3 &value) {
 	auto x = entry.GetChildValue<0>();
 	auto y = entry.GetChildValue<1>();
 	auto z = entry.GetChildValue<2>();
-	if (!ALL_VALID && (!entry.IsValid() || !x.IsValid() || !y.IsValid() || !z.IsValid())) {
-		return false;
-	}
 	value = {x.GetValue(), y.GetValue(), z.GetValue()};
-	return true;
 }
 
-template <bool ALL_VALID>
-static inline bool ReadQuat(const VectorIterator<QuatVector>::ValueEntry &entry, Quat &value) {
+static inline void ReadQuat(const VectorIterator<QuatVector>::ValueEntry &entry, Quat &value) {
 	auto w = entry.GetChildValue<0>();
 	auto x = entry.GetChildValue<1>();
 	auto y = entry.GetChildValue<2>();
 	auto z = entry.GetChildValue<3>();
-	if (!ALL_VALID && (!entry.IsValid() || !w.IsValid() || !x.IsValid() || !y.IsValid() || !z.IsValid())) {
-		return false;
-	}
 	value = {w.GetValue(), x.GetValue(), y.GetValue(), z.GetValue()};
-	return true;
 }
 
-template <bool ALL_VALID>
-static inline bool ReadTransform(const VectorIterator<TransformVector>::ValueEntry &entry, Vec3 &t, Quat &q) {
-	if (!ALL_VALID && !entry.IsValid()) {
-		return false;
-	}
-	return ReadVec3<ALL_VALID>(entry.GetChildValue<0>(), t) && ReadQuat<ALL_VALID>(entry.GetChildValue<1>(), q);
+static inline void ReadTransform(const VectorIterator<TransformVector>::ValueEntry &entry, Vec3 &t, Quat &q) {
+	ReadVec3(entry.GetChildValue<0>(), t);
+	ReadQuat(entry.GetChildValue<1>(), q);
 }
 
 static void WriteVec3(VectorWriter<Vec3Vector> &writer, const Vec3 &value) {
@@ -107,6 +161,25 @@ static bool IsFlatAndValid(const Vector &value) {
 	return true;
 }
 
+static bool IsFlatOrConstantAndValid(const Vector &value) {
+	const auto type = value.GetVectorType();
+	if (type == VectorType::CONSTANT_VECTOR) {
+		if (ConstantVector::IsNull(value)) {
+			return false;
+		}
+	} else if (type != VectorType::FLAT_VECTOR || FlatVector::Validity(value).CanHaveNull()) {
+		return false;
+	}
+	if (value.GetType().InternalType() == PhysicalType::STRUCT) {
+		for (const auto &child : StructVector::GetEntries(value)) {
+			if (!IsFlatOrConstantAndValid(child)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 struct FlatVec3 {
 	explicit FlatVec3(const Vector &vector) {
 		const auto &children = StructVector::GetEntries(vector);
@@ -132,6 +205,87 @@ struct FlatQuat {
 		return {w[i], x[i], y[i], z[i]};
 	}
 	const double *w, *x, *y, *z;
+};
+
+struct SelectedQuat {
+	Quat operator[](idx_t i) const {
+		const auto index = selection.get_index(i);
+		return {w[index], x[index], y[index], z[index]};
+	}
+	const double *w, *x, *y, *z;
+	const SelectionVector &selection;
+};
+
+struct SelectedVec3 {
+	Vec3 operator[](idx_t i) const {
+		const auto index = selection.get_index(i);
+		return {x[index], y[index], z[index]};
+	}
+	const double *x, *y, *z;
+	const SelectionVector &selection;
+};
+
+static bool SharedSelection(const UnifiedVectorFormat &x, const UnifiedVectorFormat &y, const UnifiedVectorFormat &z) {
+	return x.sel->data() == y.sel->data() && x.sel->data() == z.sel->data();
+}
+
+static bool SharedSelection(const UnifiedVectorFormat &w, const UnifiedVectorFormat &x, const UnifiedVectorFormat &y,
+                            const UnifiedVectorFormat &z) {
+	return w.sel->data() == x.sel->data() && w.sel->data() == y.sel->data() && w.sel->data() == z.sel->data();
+}
+
+// Component readers are used only after establishing complete row validity.
+struct StridedDouble {
+	explicit StridedDouble(const Vector &value) {
+		const bool constant = value.GetVectorType() == VectorType::CONSTANT_VECTOR;
+		data = constant ? ConstantVector::GetData<double>(value) : FlatVector::GetData<double>(value);
+		stride = constant ? 0 : 1;
+	}
+	double GetValueUnsafe(idx_t i) const {
+		return data[i * stride];
+	}
+	const double *data;
+	idx_t stride;
+};
+
+template <class COMPONENT>
+struct ComponentVec3 {
+	explicit ComponentVec3(const Vector &value)
+	    : x(StructVector::GetEntries(value)[0]), y(StructVector::GetEntries(value)[1]),
+	      z(StructVector::GetEntries(value)[2]) {
+	}
+	Vec3 operator[](idx_t i) const {
+		return {x.GetValueUnsafe(i), y.GetValueUnsafe(i), z.GetValueUnsafe(i)};
+	}
+	COMPONENT x, y, z;
+};
+
+template <class COMPONENT>
+struct ComponentQuat {
+	explicit ComponentQuat(const Vector &value)
+	    : w(StructVector::GetEntries(value)[0]), x(StructVector::GetEntries(value)[1]),
+	      y(StructVector::GetEntries(value)[2]), z(StructVector::GetEntries(value)[3]) {
+	}
+	Quat operator[](idx_t i) const {
+		return {w.GetValueUnsafe(i), x.GetValueUnsafe(i), y.GetValueUnsafe(i), z.GetValueUnsafe(i)};
+	}
+	COMPONENT w, x, y, z;
+};
+
+using UnifiedVec3 = ComponentVec3<VectorIterator<double>>;
+using UnifiedQuat = ComponentQuat<VectorIterator<double>>;
+using StridedVec3 = ComponentVec3<StridedDouble>;
+using StridedQuat = ComponentQuat<StridedDouble>;
+
+struct ConstantVec3 {
+	explicit ConstantVec3(const Vector &input) {
+		auto values = input.Values<Vec3Vector>();
+		ReadVec3(values[0], value);
+	}
+	Vec3 operator[](idx_t) const {
+		return value;
+	}
+	Vec3 value;
 };
 
 template <class READER, class RESULT, class OP, class... INPUTS>
@@ -264,6 +418,12 @@ void Vec3CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 	const idx_t n = input.size();
 
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1], &input.data[2]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	UnifiedVectorFormat x_uf, y_uf, z_uf;
 	input.data[0].ToUnifiedFormat(x_uf);
 	input.data[1].ToUnifiedFormat(y_uf);
@@ -276,15 +436,12 @@ void Vec3CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid =
-	    x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() && z_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		ox[i] = x[x_uf.sel->get_index(i)];
 		oy[i] = y[y_uf.sel->get_index(i)];
@@ -298,6 +455,12 @@ void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 	const idx_t n = input.size();
+
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1], &input.data[2], &input.data[3]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
 	input.data[0].ToUnifiedFormat(w_uf);
@@ -313,15 +476,12 @@ void Vec4CtorFn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = w_uf.validity.CannotHaveNull() && x_uf.validity.CannotHaveNull() &&
-	                       y_uf.validity.CannotHaveNull() && z_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) || !RowIsValid(z_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		ow[i] = w[w_uf.sel->get_index(i)];
 		ox[i] = x[x_uf.sel->get_index(i)];
@@ -335,17 +495,27 @@ static void ExecuteVec3Binary(const Vector &a, const Vector &b, Vector &result, 
 	if (TryExecuteComponentwise(a, b, result, count, operation)) {
 		return;
 	}
+	const auto validity = InputValidity(count, {&a, &b});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
 	auto left = a.Values<Vec3Vector>();
 	auto right = b.Values<Vec3Vector>();
-	auto writer = FlatVector::Writer<Vec3Vector>(result, count);
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, count, ox, oy, oz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
-		Vec3 a_value, b_value;
-		if (!ReadVec3<false>(left[i], a_value) || !ReadVec3<false>(right[i], b_value)) {
-			writer.WriteNull();
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
-		WriteVec3(writer,
-		          {operation(a_value.x, b_value.x), operation(a_value.y, b_value.y), operation(a_value.z, b_value.z)});
+		Vec3 av, bv;
+		ReadVec3(left[i], av);
+		ReadVec3(right[i], bv);
+		ox[i] = operation(av.x, bv.x);
+		oy[i] = operation(av.y, bv.y);
+		oz[i] = operation(av.z, bv.z);
 	}
 }
 
@@ -354,17 +524,28 @@ static void ExecuteQuatBinary(const Vector &a, const Vector &b, Vector &result, 
 	if (TryExecuteComponentwise(a, b, result, count, operation)) {
 		return;
 	}
+	const auto validity = InputValidity(count, {&a, &b});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
 	auto left = a.Values<QuatVector>();
 	auto right = b.Values<QuatVector>();
-	auto writer = FlatVector::Writer<QuatVector>(result, count);
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, count, ow, ox, oy, oz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
-		Quat a_value, b_value;
-		if (!ReadQuat<false>(left[i], a_value) || !ReadQuat<false>(right[i], b_value)) {
-			writer.WriteNull();
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
-		WriteQuat(writer, {operation(a_value.w, b_value.w), operation(a_value.x, b_value.x),
-		                   operation(a_value.y, b_value.y), operation(a_value.z, b_value.z)});
+		Quat av, bv;
+		ReadQuat(left[i], av);
+		ReadQuat(right[i], bv);
+		ow[i] = operation(av.w, bv.w);
+		ox[i] = operation(av.x, bv.x);
+		oy[i] = operation(av.y, bv.y);
+		oz[i] = operation(av.z, bv.z);
 	}
 }
 
@@ -393,18 +574,27 @@ void VScaleVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	if (TryExecuteComponentwise(input.data[0], input.data[1], result, count, std::multiplies<double>())) {
 		return;
 	}
+	const auto validity = InputValidity(count, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
 	auto values = input.data[0].Values<Vec3Vector>();
 	auto scales = input.data[1].Values<double>();
-	auto writer = FlatVector::Writer<Vec3Vector>(result, count);
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, count, ox, oy, oz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
-		Vec3 value;
-		auto scalar = scales[i];
-		if (!ReadVec3<false>(values[i], value) || !scalar.IsValid()) {
-			writer.WriteNull();
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
-		const double scale = scalar.GetValue();
-		WriteVec3(writer, {value.x * scale, value.y * scale, value.z * scale});
+		Vec3 value;
+		ReadVec3(values[i], value);
+		const double scale = scales[i].GetValue();
+		ox[i] = value.x * scale;
+		oy[i] = value.y * scale;
+		oz[i] = value.z * scale;
 	}
 }
 
@@ -413,18 +603,28 @@ void VScaleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	if (TryExecuteComponentwise(input.data[0], input.data[1], result, count, std::multiplies<double>())) {
 		return;
 	}
+	const auto validity = InputValidity(count, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
 	auto values = input.data[0].Values<QuatVector>();
 	auto scales = input.data[1].Values<double>();
-	auto writer = FlatVector::Writer<QuatVector>(result, count);
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, count, ow, ox, oy, oz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
-		Quat value;
-		auto scalar = scales[i];
-		if (!ReadQuat<false>(values[i], value) || !scalar.IsValid()) {
-			writer.WriteNull();
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
-		const double scale = scalar.GetValue();
-		WriteQuat(writer, {value.w * scale, value.x * scale, value.y * scale, value.z * scale});
+		Quat value;
+		ReadQuat(values[i], value);
+		const double scale = scales[i].GetValue();
+		ow[i] = value.w * scale;
+		ox[i] = value.x * scale;
+		oy[i] = value.y * scale;
+		oz[i] = value.z * scale;
 	}
 }
 
@@ -437,14 +637,18 @@ void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -462,20 +666,13 @@ void VDotVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		out[i] = ax[ax_uf.sel->get_index(i)] * bx[bx_uf.sel->get_index(i)] +
 		         ay[ay_uf.sel->get_index(i)] * by[by_uf.sel->get_index(i)] +
@@ -492,14 +689,18 @@ void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf, bw_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -521,22 +722,13 @@ void VDotVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       aw_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       bw_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) ||
-			    !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) || !RowIsValid(bw_uf, i) || !RowIsValid(bx_uf, i) ||
-			    !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		out[i] = aw[aw_uf.sel->get_index(i)] * bw[bw_uf.sel->get_index(i)] +
 		         ax[ax_uf.sel->get_index(i)] * bx[bx_uf.sel->get_index(i)] +
@@ -553,11 +745,16 @@ void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -569,17 +766,13 @@ void VNorm2Vec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const double x = ax[ax_uf.sel->get_index(i)];
 		const double y = ay[ay_uf.sel->get_index(i)];
@@ -596,11 +789,16 @@ void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -614,19 +812,13 @@ void VNorm2Vec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const double w = aw[aw_uf.sel->get_index(i)];
 		const double x = ax[ax_uf.sel->get_index(i)];
@@ -644,11 +836,16 @@ void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -660,17 +857,13 @@ void VNormVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const double x = ax[ax_uf.sel->get_index(i)];
 		const double y = ay[ay_uf.sel->get_index(i)];
@@ -687,11 +880,16 @@ void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -705,19 +903,13 @@ void VNormVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, n);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &out_validity = FlatVector::ValidityMutable(result);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i)) {
-				out_validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const double w = aw[aw_uf.sel->get_index(i)];
 		const double x = ax[ax_uf.sel->get_index(i)];
@@ -741,11 +933,16 @@ void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -757,15 +954,12 @@ void VNormalizeVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double x = ax[ax_uf.sel->get_index(i)];
@@ -789,11 +983,16 @@ void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &a = StructVector::GetEntries(a_v);
 
-	UnifiedVectorFormat a_uf, aw_uf, ax_uf, ay_uf, az_uf;
-	a_v.ToUnifiedFormat(a_uf);
+	UnifiedVectorFormat aw_uf, ax_uf, ay_uf, az_uf;
 	a[0].ToUnifiedFormat(aw_uf);
 	a[1].ToUnifiedFormat(ax_uf);
 	a[2].ToUnifiedFormat(ay_uf);
@@ -807,17 +1006,12 @@ void VNormalizeVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && aw_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(aw_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double w = aw[aw_uf.sel->get_index(i)];
@@ -840,14 +1034,18 @@ void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &a_v = input.data[0];
 	auto &b_v = input.data[1];
 	auto &a = StructVector::GetEntries(a_v);
 	auto &b = StructVector::GetEntries(b_v);
 
-	UnifiedVectorFormat a_uf, b_uf, ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
-	a_v.ToUnifiedFormat(a_uf);
-	b_v.ToUnifiedFormat(b_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, bx_uf, by_uf, bz_uf;
 	a[0].ToUnifiedFormat(ax_uf);
 	a[1].ToUnifiedFormat(ay_uf);
 	a[2].ToUnifiedFormat(az_uf);
@@ -865,18 +1063,12 @@ void VCrossVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = a_uf.validity.CannotHaveNull() && b_uf.validity.CannotHaveNull() &&
-	                       ax_uf.validity.CannotHaveNull() && ay_uf.validity.CannotHaveNull() &&
-	                       az_uf.validity.CannotHaveNull() && bx_uf.validity.CannotHaveNull() &&
-	                       by_uf.validity.CannotHaveNull() && bz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(a_uf, i) || !RowIsValid(b_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) ||
-			    !RowIsValid(az_uf, i) || !RowIsValid(bx_uf, i) || !RowIsValid(by_uf, i) || !RowIsValid(bz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 
 		const double axv = ax[ax_uf.sel->get_index(i)];
@@ -915,38 +1107,33 @@ static void VAngleFn(DataChunk &input, Vector &result) {
 			return;
 		}
 	}
+	const auto validity = InputValidity(count, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
+
 	auto &a_vector = input.data[0];
 	auto &b_vector = input.data[1];
 	auto &a_children = StructVector::GetEntries(a_vector);
 	auto &b_children = StructVector::GetEntries(b_vector);
-	UnifiedVectorFormat a_parent, b_parent;
-	a_vector.ToUnifiedFormat(a_parent);
-	b_vector.ToUnifiedFormat(b_parent);
 	std::array<UnifiedVectorFormat, N> a_formats, b_formats;
 	std::array<const double *, N> a_data, b_data;
-	bool all_valid = a_parent.validity.CannotHaveNull() && b_parent.validity.CannotHaveNull();
 	for (std::size_t component = 0; component < N; component++) {
 		a_children[component].ToUnifiedFormat(a_formats[component]);
 		b_children[component].ToUnifiedFormat(b_formats[component]);
 		a_data[component] = UnifiedVectorFormat::GetData<double>(a_formats[component]);
 		b_data[component] = UnifiedVectorFormat::GetData<double>(b_formats[component]);
-		all_valid &= a_formats[component].validity.CannotHaveNull() && b_formats[component].validity.CannotHaveNull();
 	}
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	FlatVector::SetSize(result, count);
 	auto *out = FlatVector::GetDataMutable<double>(result);
-	auto &validity = FlatVector::ValidityMutable(result);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
-		if (!all_valid) {
-			bool valid = RowIsValid(a_parent, i) && RowIsValid(b_parent, i);
-			for (std::size_t component = 0; component < N; component++) {
-				valid &= RowIsValid(a_formats[component], i) && RowIsValid(b_formats[component], i);
-			}
-			if (!valid) {
-				validity.SetInvalid(i);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		std::array<double, N> a, b;
 		for (std::size_t component = 0; component < N; component++) {
@@ -999,73 +1186,43 @@ void VAngleVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	VAngleFn<4, AngleFunction::ANGLE>(input, result);
 }
 
-// Combine flat masks directly. Check selected components together so each row
-// stops at its first NULL, without constructing a mask for every component.
-static ValidityMask ProjectionValidity(DataChunk &input) {
-	const idx_t count = input.size();
-	ValidityMask validity(count);
-	vector<VectorValidityIterator> selected;
-	auto combine = [&](const Vector &value) {
-		if (value.GetVectorType() == VectorType::FLAT_VECTOR) {
-			validity.Combine(FlatVector::Validity(value), count);
-		} else if (value.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-			ValidityMask constant(count);
-			constant.Combine(value, count);
-			validity.Combine(constant, count);
-		} else {
-			auto entries = value.Validity();
-			if (entries.CanHaveNull()) {
-				selected.push_back(std::move(entries));
-			}
-		}
-	};
-	for (auto &value : input.data) {
-		combine(value);
-		for (const auto &child : StructVector::GetEntries(value)) {
-			combine(child);
-		}
-	}
-	if (selected.empty() || validity.CheckAllInvalid(count)) {
-		return validity;
-	}
-
-	// Flat masks may be shared with inputs; copy before marking selected rows NULL.
-	ValidityMask combined(validity, count);
+template <bool REJECT, class LEFT_READER, class RIGHT_READER>
+static void ExecuteProjection3(const LEFT_READER &a, const RIGHT_READER &b, Vector &result, idx_t count) {
+	double *ox, *oy, *oz;
+	PrepareVec3Out(result, count, ox, oy, oz);
 	for (idx_t i = 0; i < count; i++) {
-		if (!validity.RowIsValid(i)) {
-			continue;
-		}
-		for (const auto &entries : selected) {
-			if (!entries.IsValid(i)) {
-				combined.SetInvalid(i);
-				break;
-			}
-		}
+		const auto av = a[i];
+		const auto bv = b[i];
+		Projection3<REJECT>(av.x, av.y, av.z, bv.x, bv.y, bv.z, ox[i], oy[i], oz[i]);
 	}
-	return combined;
 }
 
-static void SetProjectionValidity(Vector &result, const ValidityMask &validity) {
-	FlatVector::SetValidity(result, validity);
-	for (auto &child : StructVector::GetEntries(result)) {
-		FlatVector::SetValidity(child, validity);
+template <bool REJECT>
+static bool TryExecuteDenseProjection3(const Vector &a, const Vector &b, Vector &result, idx_t count) {
+	const bool a_flat = IsFlatAndValid(a);
+	const bool b_flat = IsFlatAndValid(b);
+	if (a_flat && b_flat) {
+		ExecuteProjection3<REJECT>(FlatVec3(a), FlatVec3(b), result, count);
+	} else if (!IsFlatOrConstantAndValid(a) || !IsFlatOrConstantAndValid(b)) {
+		return false;
+	} else if (a.GetVectorType() == VectorType::CONSTANT_VECTOR && b_flat) {
+		ExecuteProjection3<REJECT>(ConstantVec3(a), FlatVec3(b), result, count);
+	} else if (b.GetVectorType() == VectorType::CONSTANT_VECTOR && a_flat) {
+		ExecuteProjection3<REJECT>(FlatVec3(a), ConstantVec3(b), result, count);
+	} else {
+		ExecuteProjection3<REJECT>(StridedVec3(a), StridedVec3(b), result, count);
 	}
+	return true;
 }
 
 // vproj(vec3, vec3) -> vec3
 void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
-		const FlatVec3 a(input.data[0]), b(input.data[1]);
-		double *ox, *oy, *oz;
-		PrepareVec3Out(result, n, ox, oy, oz);
-		for (idx_t i = 0; i < n; i++) {
-			Projection3(a.x[i], a.y[i], a.z[i], b.x[i], b.y[i], b.z[i], ox[i], oy[i], oz[i]);
-		}
+	if (TryExecuteDenseProjection3<false>(input.data[0], input.data[1], result, n)) {
 		return;
 	}
 
-	auto validity = ProjectionValidity(input);
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
 	if (validity.CheckAllInvalid(n)) {
 		ConstantVector::SetNull(result, count_t(n));
 		return;
@@ -1094,7 +1251,7 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	SetProjectionValidity(result, validity);
+	SetResultValidity(result, validity);
 	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid && !validity.RowIsValid(i)) {
@@ -1111,11 +1268,30 @@ void VProjVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
+template <bool REJECT, class READER>
+static void ExecuteProjection4(const READER &a, const READER &b, Vector &result, idx_t count) {
+	double *ow, *ox, *oy, *oz;
+	PrepareQuatOut(result, count, ow, ox, oy, oz);
+	for (idx_t i = 0; i < count; i++) {
+		const auto av = a[i];
+		const auto bv = b[i];
+		Projection4<REJECT>(av.w, av.x, av.y, av.z, bv.w, bv.x, bv.y, bv.z, ow[i], ox[i], oy[i], oz[i]);
+	}
+}
+
 // vproj(vec4, vec4) -> vec4
 void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+		ExecuteProjection4<false>(FlatQuat(input.data[0]), FlatQuat(input.data[1]), result, n);
+		return;
+	}
+	if (IsFlatOrConstantAndValid(input.data[0]) && IsFlatOrConstantAndValid(input.data[1])) {
+		ExecuteProjection4<false>(StridedQuat(input.data[0]), StridedQuat(input.data[1]), result, n);
+		return;
+	}
 
-	auto validity = ProjectionValidity(input);
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
 	if (validity.CheckAllInvalid(n)) {
 		ConstantVector::SetNull(result, count_t(n));
 		return;
@@ -1145,11 +1321,17 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *by = (const double *)by_uf.data;
 	auto *bz = (const double *)bz_uf.data;
 
+	const bool all_valid = validity.CannotHaveNull();
+	if (all_valid && SharedSelection(aw_uf, ax_uf, ay_uf, az_uf) && SharedSelection(bw_uf, bx_uf, by_uf, bz_uf)) {
+		ExecuteProjection4<false>(SelectedQuat {aw, ax, ay, az, *aw_uf.sel}, SelectedQuat {bw, bx, by, bz, *bw_uf.sel},
+		                          result, n);
+		return;
+	}
+
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	SetProjectionValidity(result, validity);
-	const bool all_valid = validity.CannotHaveNull();
+	SetResultValidity(result, validity);
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
@@ -1170,8 +1352,11 @@ void VProjVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vrej(vec3, vec3) -> vec3
 void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (TryExecuteDenseProjection3<true>(input.data[0], input.data[1], result, n)) {
+		return;
+	}
 
-	auto validity = ProjectionValidity(input);
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
 	if (validity.CheckAllInvalid(n)) {
 		ConstantVector::SetNull(result, count_t(n));
 		return;
@@ -1200,7 +1385,7 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	SetProjectionValidity(result, validity);
+	SetResultValidity(result, validity);
 	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid && !validity.RowIsValid(i)) {
@@ -1220,8 +1405,16 @@ void VRejVec3Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // vrej(vec4, vec4) -> vec4
 void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+		ExecuteProjection4<true>(FlatQuat(input.data[0]), FlatQuat(input.data[1]), result, n);
+		return;
+	}
+	if (IsFlatOrConstantAndValid(input.data[0]) && IsFlatOrConstantAndValid(input.data[1])) {
+		ExecuteProjection4<true>(StridedQuat(input.data[0]), StridedQuat(input.data[1]), result, n);
+		return;
+	}
 
-	auto validity = ProjectionValidity(input);
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
 	if (validity.CheckAllInvalid(n)) {
 		ConstantVector::SetNull(result, count_t(n));
 		return;
@@ -1251,11 +1444,17 @@ void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 	auto *by = (const double *)by_uf.data;
 	auto *bz = (const double *)bz_uf.data;
 
+	const bool all_valid = validity.CannotHaveNull();
+	if (all_valid && SharedSelection(aw_uf, ax_uf, ay_uf, az_uf) && SharedSelection(bw_uf, bx_uf, by_uf, bz_uf)) {
+		ExecuteProjection4<true>(SelectedQuat {aw, ax, ay, az, *aw_uf.sel}, SelectedQuat {bw, bx, by, bz, *bw_uf.sel},
+		                         result, n);
+		return;
+	}
+
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	SetProjectionValidity(result, validity);
-	const bool all_valid = validity.CannotHaveNull();
+	SetResultValidity(result, validity);
 	for (idx_t i = 0; i < n; i++) {
 		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
@@ -1276,11 +1475,18 @@ void VRejVec4Fn(DataChunk &input, ExpressionState &, Vector &result) {
 // Constant arguments are evaluated once per chunk, including NULL and zero axes.
 template <bool CONSTANT_AXIS, bool CONSTANT_ANGLE>
 static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector &result, idx_t count) {
+	const auto validity = InputValidity(count, {&axis, &angle});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
+	ValidityMask result_validity(validity, count);
 	auto axes = axis.Values<Vec3Vector>();
 	auto angles = angle.Values<double>();
 	auto read_axis = [&](idx_t i, Vec3 &unit) {
 		Vec3 value;
-		if (!ReadVec3<false>(axes[i], value) || (value.x == 0.0 && value.y == 0.0 && value.z == 0.0)) {
+		ReadVec3(axes[i], value);
+		if (value.x == 0.0 && value.y == 0.0 && value.z == 0.0) {
 			return false;
 		}
 		Normalize3(value.x, value.y, value.z, unit.x, unit.y, unit.z);
@@ -1288,13 +1494,9 @@ static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector 
 	};
 	auto read_angle = [&](idx_t i, double &sine, double &cosine) {
 		auto entry = angles[i];
-		if (!entry.IsValid()) {
-			return false;
-		}
 		const double half = 0.5 * entry.GetValue();
 		sine = std::sin(half);
 		cosine = std::cos(half);
-		return true;
 	};
 	Vec3 unit;
 	double sine, cosine;
@@ -1305,24 +1507,29 @@ static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector 
 		}
 	}
 	if constexpr (CONSTANT_ANGLE) {
-		if (!read_angle(0, sine, cosine)) {
-			ConstantVector::SetNull(result, count_t(count));
-			return;
-		}
+		read_angle(0, sine, cosine);
 	}
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, count, ow, ox, oy, oz);
 	const idx_t iterations = CONSTANT_AXIS && CONSTANT_ANGLE ? 1 : count;
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < iterations; i++) {
-		if ((!CONSTANT_AXIS && !read_axis(i, unit)) || (!CONSTANT_ANGLE && !read_angle(i, sine, cosine))) {
-			FlatVector::SetNull(result, i, true);
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
+		}
+		if (!CONSTANT_AXIS && !read_axis(i, unit)) {
+			result_validity.SetInvalid(i);
+			continue;
+		}
+		if constexpr (!CONSTANT_ANGLE) {
+			read_angle(i, sine, cosine);
 		}
 		ow[i] = cosine;
 		ox[i] = unit.x * sine;
 		oy[i] = unit.y * sine;
 		oz[i] = unit.z * sine;
 	}
+	SetResultValidity(result, result_validity);
 	if constexpr (CONSTANT_AXIS && CONSTANT_ANGLE) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
@@ -1344,12 +1551,18 @@ static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector 
 
 	const idx_t n = count;
 
+	const auto validity = InputValidity(n, {&axis, &angle});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	ValidityMask result_validity(validity, n);
+
 	auto &axis_v = axis;
 	auto &axis_ent = StructVector::GetEntries(axis_v);
 	auto &th_v = angle;
 
-	UnifiedVectorFormat axis_uf, ax_uf, ay_uf, az_uf, th_uf;
-	axis_v.ToUnifiedFormat(axis_uf);
+	UnifiedVectorFormat ax_uf, ay_uf, az_uf, th_uf;
 	axis_ent[0].ToUnifiedFormat(ax_uf);
 	axis_ent[1].ToUnifiedFormat(ay_uf);
 	axis_ent[2].ToUnifiedFormat(az_uf);
@@ -1367,27 +1580,22 @@ static void AxisAngleQuaternion(const Vector &axis, const Vector &angle, Vector 
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = axis_uf.validity.CannotHaveNull() && ax_uf.validity.CannotHaveNull() &&
-	                       ay_uf.validity.CannotHaveNull() && az_uf.validity.CannotHaveNull() &&
-	                       th_uf.validity.CannotHaveNull();
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(axis_uf, i) || !RowIsValid(ax_uf, i) || !RowIsValid(ay_uf, i) || !RowIsValid(az_uf, i) ||
-			    !RowIsValid(th_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const double thv = th[th_sel->get_index(i)];
 		const double axv = ax[ax_sel->get_index(i)];
 		const double ayv = ay[ay_sel->get_index(i)];
 		const double azv = az[az_sel->get_index(i)];
 		if (!AxisAngleToQuat(axv, ayv, azv, thv, ow[i], ox[i], oy[i], oz[i])) {
-			FlatVector::SetNull(result, i, true);
+			result_validity.SetInvalid(i);
 			continue;
 		}
 	}
+	SetResultValidity(result, result_validity);
 }
 
 // quat_from_axis_angle(axis:vec3, th:DOUBLE) -> quat
@@ -1395,36 +1603,44 @@ void QuatFromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
 	AxisAngleQuaternion(input.data[0], input.data[1], result, input.size());
 }
 
-static Quat MultiplyQuaternions(Quat a, Quat b) {
-	Quat result;
-	QMul(a.w, a.x, a.y, a.z, b.w, b.x, b.y, b.z, result.w, result.x, result.y, result.z);
-	return result;
-}
-
-template <bool ALL_VALID>
-static void MultiplyQuaternionRows(const Vector &a, const Vector &b, Vector &result, idx_t count) {
-	auto left = a.Values<QuatVector>();
-	auto right = b.Values<QuatVector>();
-	auto writer = FlatVector::Writer<QuatVector>(result, count);
+template <class READER>
+static void MultiplyQuaternionComponents(const Vector &a, const Vector &b, Vector &result, idx_t count) {
+	const READER left(a), right(b);
+	double *w, *x, *y, *z;
+	PrepareQuatOut(result, count, w, x, y, z);
 	for (idx_t i = 0; i < count; i++) {
-		Quat av, bv;
-		if (!ReadQuat<ALL_VALID>(left[i], av) || !ReadQuat<ALL_VALID>(right[i], bv)) {
-			writer.WriteNull();
-			continue;
-		}
-		WriteQuat(writer, MultiplyQuaternions(av, bv));
+		const auto av = left[i];
+		const auto bv = right[i];
+		QMul(av.w, av.x, av.y, av.z, bv.w, bv.x, bv.y, bv.z, w[i], x[i], y[i], z[i]);
 	}
 }
 
 static void MultiplyQuaternions(const Vector &a, const Vector &b, Vector &result, idx_t count) {
-	if (TryExecuteFlat<FlatQuat, QuatVector>(
-	        result, count, [](Quat av, Quat bv) { return MultiplyQuaternions(av, bv); }, a, b)) {
+	if (IsFlatAndValid(a) && IsFlatAndValid(b)) {
+		MultiplyQuaternionComponents<FlatQuat>(a, b, result, count);
 		return;
 	}
-	if (CannotHaveNullComponents(a) && CannotHaveNullComponents(b)) {
-		MultiplyQuaternionRows<true>(a, b, result, count);
-	} else {
-		MultiplyQuaternionRows<false>(a, b, result, count);
+	if (IsFlatOrConstantAndValid(a) && IsFlatOrConstantAndValid(b)) {
+		MultiplyQuaternionComponents<StridedQuat>(a, b, result, count);
+		return;
+	}
+	const auto validity = InputValidity(count, {&a, &b});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
+	const UnifiedQuat left(a), right(b);
+	double *w, *x, *y, *z;
+	PrepareQuatOut(result, count, w, x, y, z);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
+	for (idx_t i = 0; i < count; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
+		}
+		const auto av = left[i];
+		const auto bv = right[i];
+		QMul(av.w, av.x, av.y, av.z, bv.w, bv.x, bv.y, bv.z, w[i], x[i], y[i], z[i]);
 	}
 }
 
@@ -1439,12 +1655,17 @@ void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 	if (TryNegateComponents(input.data[0], result, n, 1)) {
 		return;
 	}
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &q_v = input.data[0];
 	auto &q = StructVector::GetEntries(q_v);
 
 	UnifiedVectorFormat w_uf, x_uf, y_uf, z_uf;
-	UnifiedVectorFormat q_uf;
-	q_v.ToUnifiedFormat(q_uf);
+
 	q[0].ToUnifiedFormat(w_uf);
 	q[1].ToUnifiedFormat(x_uf);
 	q[2].ToUnifiedFormat(y_uf);
@@ -1462,17 +1683,12 @@ void QConjFn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ow, *ox, *oy, *oz;
 	PrepareQuatOut(result, n, ow, ox, oy, oz);
 
-	const bool all_valid = q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() &&
-	                       x_uf.validity.CannotHaveNull() && y_uf.validity.CannotHaveNull() &&
-	                       z_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(q_uf, i) || !RowIsValid(w_uf, i) || !RowIsValid(x_uf, i) || !RowIsValid(y_uf, i) ||
-			    !RowIsValid(z_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		ow[i] = w[w_sel->get_index(i)];
 		ox[i] = -x[x_sel->get_index(i)];
@@ -1504,15 +1720,18 @@ static void MakeTransform(const Vector &t_v, const Vector &q_v, Vector &result, 
 	if (TryReferenceStruct(result, {&t_v, &q_v})) {
 		return;
 	}
+	const auto validity = InputValidity(n, {&t_v, &q_v});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &t = StructVector::GetEntries(t_v);
 	auto &q = StructVector::GetEntries(q_v);
 
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf;
 	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf;
-	UnifiedVectorFormat t_uf, q_uf;
 
-	t_v.ToUnifiedFormat(t_uf);
-	q_v.ToUnifiedFormat(q_uf);
 	t[0].ToUnifiedFormat(tx_uf);
 	t[1].ToUnifiedFormat(ty_uf);
 	t[2].ToUnifiedFormat(tz_uf);
@@ -1541,19 +1760,12 @@ static void MakeTransform(const Vector &t_v, const Vector &q_v, Vector &result, 
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid =
-	    t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
-	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
-	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
-			    !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) ||
-			    !RowIsValid(qz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		otx[i] = itx[itx_sel->get_index(i)];
 		oty[i] = ity[ity_sel->get_index(i)];
@@ -1581,56 +1793,92 @@ void Se3FromAxisAngleFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(count, {&input.data[0], &input.data[1], &input.data[2]});
+	if (validity.CheckAllInvalid(count)) {
+		ConstantVector::SetNull(result, count_t(count));
+		return;
+	}
+	ValidityMask result_validity(validity, count);
 	// Skip invalid translations before normalizing axes or evaluating trigonometric functions.
 	auto translations = input.data[0].Values<Vec3Vector>();
 	auto axes = input.data[1].Values<Vec3Vector>();
 	auto angles = input.data[2].Values<double>();
 	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
 	PrepareWOut(result, count, tx, ty, tz, qw, qx, qy, qz);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < count; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
+		}
 		Vec3 translation, axis;
 		auto angle = angles[i];
-		if (!ReadVec3<false>(translations[i], translation) || !ReadVec3<false>(axes[i], axis) || !angle.IsValid() ||
-		    !AxisAngleToQuat(axis.x, axis.y, axis.z, angle.GetValue(), qw[i], qx[i], qy[i], qz[i])) {
-			FlatVector::SetNull(result, i, true);
+		ReadVec3(translations[i], translation);
+		ReadVec3(axes[i], axis);
+		if (!AxisAngleToQuat(axis.x, axis.y, axis.z, angle.GetValue(), qw[i], qx[i], qy[i], qz[i])) {
+			result_validity.SetInvalid(i);
 			continue;
 		}
 		tx[i] = translation.x;
 		ty[i] = translation.y;
 		tz[i] = translation.z;
 	}
+	SetResultValidity(result, result_validity);
 }
 
-template <bool ALL_VALID>
 static void Se3Apply(DataChunk &input, Vector &result) {
 	const idx_t n = input.size();
-	auto transforms = input.data[0].Values<TransformVector>();
-	auto points = input.data[1].Values<Vec3Vector>();
-	if constexpr (ALL_VALID) {
-		double *x, *y, *z;
-		PrepareVec3Out(result, n, x, y, z);
-		for (idx_t i = 0; i < n; i++) {
-			auto transform = transforms[i];
-			Vec3 t, p;
-			Quat q;
-			ReadVec3<true>(transform.GetChildValue<0>(), t);
-			ReadQuat<true>(transform.GetChildValue<1>(), q);
-			ReadVec3<true>(points[i], p);
-			QRotate(q.w, q.x, q.y, q.z, p.x + t.x, p.y + t.y, p.z + t.z, x[i], y[i], z[i]);
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	const auto &transform = StructVector::GetEntries(input.data[0]);
+	if (validity.CannotHaveNull()) {
+		std::array<UnifiedVectorFormat, 3> t, p;
+		std::array<UnifiedVectorFormat, 4> q;
+		const auto &tc = StructVector::GetEntries(transform[0]);
+		const auto &qc = StructVector::GetEntries(transform[1]);
+		const auto &pc = StructVector::GetEntries(input.data[1]);
+		for (idx_t i = 0; i < 3; i++) {
+			tc[i].ToUnifiedFormat(t[i]);
+			pc[i].ToUnifiedFormat(p[i]);
 		}
-	} else {
-		auto writer = FlatVector::Writer<Vec3Vector>(result, n);
-		for (idx_t i = 0; i < n; i++) {
-			auto transform = transforms[i];
-			Vec3 t, p;
-			Quat q;
-			if (!transform.IsValid() || !ReadVec3<false>(transform.GetChildValue<0>(), t) ||
-			    !ReadQuat<false>(transform.GetChildValue<1>(), q) || !ReadVec3<false>(points[i], p)) {
-				writer.WriteNull();
-				continue;
+		for (idx_t i = 0; i < 4; i++) {
+			qc[i].ToUnifiedFormat(q[i]);
+		}
+		if (SharedSelection(t[0], t[1], t[2]) && SharedSelection(q[0], q[1], q[2], q[3]) &&
+		    SharedSelection(p[0], p[1], p[2])) {
+			const SelectedVec3 translations {t[0].GetData<double>(), t[1].GetData<double>(), t[2].GetData<double>(),
+			                                 *t[0].sel};
+			const SelectedQuat rotations {q[0].GetData<double>(), q[1].GetData<double>(), q[2].GetData<double>(),
+			                              q[3].GetData<double>(), *q[0].sel};
+			const SelectedVec3 points {p[0].GetData<double>(), p[1].GetData<double>(), p[2].GetData<double>(),
+			                           *p[0].sel};
+			double *x, *y, *z;
+			PrepareVec3Out(result, n, x, y, z);
+			for (idx_t i = 0; i < n; i++) {
+				const auto tv = translations[i];
+				const auto qv = rotations[i];
+				const auto pv = points[i];
+				QRotate(qv.w, qv.x, qv.y, qv.z, pv.x + tv.x, pv.y + tv.y, pv.z + tv.z, x[i], y[i], z[i]);
 			}
-			WriteVec3(writer, Rotate(q, {p.x + t.x, p.y + t.y, p.z + t.z}));
+			return;
 		}
+	}
+	const UnifiedVec3 translations(transform[0]), points(input.data[1]);
+	const UnifiedQuat rotations(transform[1]);
+	double *x, *y, *z;
+	PrepareVec3Out(result, n, x, y, z);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
+		}
+		const auto t = translations[i];
+		const auto p = points[i];
+		const auto q = rotations[i];
+		QRotate(q.w, q.x, q.y, q.z, p.x + t.x, p.y + t.y, p.z + t.z, x[i], y[i], z[i]);
 	}
 }
 
@@ -1650,43 +1898,82 @@ void Se3ApplyFn(DataChunk &input, ExpressionState &, Vector &result) {
 		}
 		return;
 	}
-	if (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1])) {
-		Se3Apply<true>(input, result);
-	} else {
-		Se3Apply<false>(input, result);
+	if (input.data[0].GetVectorType() == VectorType::CONSTANT_VECTOR && CannotHaveNullComponents(input.data[0]) &&
+	    IsFlatAndValid(input.data[1])) {
+		const idx_t count = input.size();
+		auto transforms = input.data[0].Values<TransformVector>();
+		Vec3 t;
+		Quat q;
+		ReadTransform(transforms[0], t, q);
+		FlatVec3 points(input.data[1]);
+		double *x, *y, *z;
+		PrepareVec3Out(result, count, x, y, z);
+		for (idx_t i = 0; i < count; i++) {
+			auto p = points[i];
+			QRotate(q.w, q.x, q.y, q.z, p.x + t.x, p.y + t.y, p.z + t.z, x[i], y[i], z[i]);
+		}
+		return;
 	}
+	if (input.data[1].GetVectorType() == VectorType::CONSTANT_VECTOR && CannotHaveNullComponents(input.data[1]) &&
+	    IsFlatAndValid(input.data[0])) {
+		const idx_t count = input.size();
+		const auto &transform = StructVector::GetEntries(input.data[0]);
+		const FlatVec3 translations(transform[0]);
+		const FlatQuat rotations(transform[1]);
+		const auto p = ConstantVec3(input.data[1])[0];
+		double *x, *y, *z;
+		PrepareVec3Out(result, count, x, y, z);
+		for (idx_t i = 0; i < count; i++) {
+			const auto t = translations[i];
+			const auto q = rotations[i];
+			QRotate(q.w, q.x, q.y, q.z, p.x + t.x, p.y + t.y, p.z + t.z, x[i], y[i], z[i]);
+		}
+		return;
+	}
+	if (IsFlatOrConstantAndValid(input.data[0]) && IsFlatOrConstantAndValid(input.data[1])) {
+		const idx_t count = input.size();
+		const auto &transform = StructVector::GetEntries(input.data[0]);
+		const StridedVec3 translations(transform[0]), points(input.data[1]);
+		const StridedQuat rotations(transform[1]);
+		double *x, *y, *z;
+		PrepareVec3Out(result, count, x, y, z);
+		for (idx_t i = 0; i < count; i++) {
+			const auto t = translations[i];
+			const auto q = rotations[i];
+			const auto p = points[i];
+			QRotate(q.w, q.x, q.y, q.z, p.x + t.x, p.y + t.y, p.z + t.z, x[i], y[i], z[i]);
+		}
+		return;
+	}
+	Se3Apply(input, result);
 }
 
 void Se3ApplyTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	AddVec3(input.data[1], input.data[0], result, input.size());
 }
 
-template <bool ALL_VALID>
 static void Se3ApplyQ(DataChunk &input, Vector &result) {
 	const idx_t n = input.size();
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
 	auto rotations = input.data[0].Values<QuatVector>();
 	auto points = input.data[1].Values<Vec3Vector>();
-	if constexpr (ALL_VALID) {
-		double *x, *y, *z;
-		PrepareVec3Out(result, n, x, y, z);
-		for (idx_t i = 0; i < n; i++) {
-			Quat q;
-			Vec3 p;
-			ReadQuat<true>(rotations[i], q);
-			ReadVec3<true>(points[i], p);
-			QRotate(q.w, q.x, q.y, q.z, p.x, p.y, p.z, x[i], y[i], z[i]);
+	double *x, *y, *z;
+	PrepareVec3Out(result, n, x, y, z);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
-	} else {
-		auto writer = FlatVector::Writer<Vec3Vector>(result, n);
-		for (idx_t i = 0; i < n; i++) {
-			Quat q;
-			Vec3 p;
-			if (!ReadQuat<false>(rotations[i], q) || !ReadVec3<false>(points[i], p)) {
-				writer.WriteNull();
-				continue;
-			}
-			WriteVec3(writer, Rotate(q, p));
-		}
+		Quat q;
+		Vec3 p;
+		ReadQuat(rotations[i], q);
+		ReadVec3(points[i], p);
+		QRotate(q.w, q.x, q.y, q.z, p.x, p.y, p.z, x[i], y[i], z[i]);
 	}
 }
 
@@ -1709,7 +1996,7 @@ void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 		const idx_t count = input.size();
 		auto rotations = input.data[0].Values<QuatVector>();
 		Quat q;
-		ReadQuat<true>(rotations[0], q);
+		ReadQuat(rotations[0], q);
 		FlatVec3 points(input.data[1]);
 		double *x, *y, *z;
 		PrepareVec3Out(result, count, x, y, z);
@@ -1719,11 +2006,7 @@ void Se3ApplyQFn(DataChunk &input, ExpressionState &, Vector &result) {
 		}
 		return;
 	}
-	if (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1])) {
-		Se3ApplyQ<true>(input, result);
-	} else {
-		Se3ApplyQ<false>(input, result);
-	}
+	Se3ApplyQ(input, result);
 }
 
 // se3_inv(t) -> t (negation)
@@ -1733,11 +2016,16 @@ void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+
 	auto &t_v = input.data[0];
 	auto &t = StructVector::GetEntries(t_v);
 
-	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, t_uf;
-	t_v.ToUnifiedFormat(t_uf);
+	UnifiedVectorFormat tx_uf, ty_uf, tz_uf;
 	t[0].ToUnifiedFormat(tx_uf);
 	t[1].ToUnifiedFormat(ty_uf);
 	t[2].ToUnifiedFormat(tz_uf);
@@ -1749,15 +2037,12 @@ void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *ox, *oy, *oz;
 	PrepareVec3Out(result, n, ox, oy, oz);
 
-	const bool all_valid = t_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
-	                       ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(t_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		ox[i] = -tx[tx_uf.sel->get_index(i)];
 		oy[i] = -ty[ty_uf.sel->get_index(i)];
@@ -1765,19 +2050,26 @@ void Se3InvTFn(DataChunk &input, ExpressionState &, Vector &result) {
 	}
 }
 
-template <bool ALL_VALID>
 static void Se3InvW(DataChunk &input, Vector &result) {
 	const idx_t n = input.size();
-	auto transforms = input.data[0].Values<TransformVector>();
+	const auto validity = InputValidity(n, {&input.data[0]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	const auto &children = StructVector::GetEntries(input.data[0]);
+	const UnifiedVec3 translations(children[0]);
+	const UnifiedQuat rotations(children[1]);
 	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
 	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		Vec3 t;
-		Quat q;
-		if (!ReadTransform<ALL_VALID>(transforms[i], t, q)) {
-			FlatVector::SetNull(result, i, true);
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
+		const auto t = translations[i];
+		const auto q = rotations[i];
 		double rx, ry, rz;
 		QRotate(q.w, q.x, q.y, q.z, t.x, t.y, t.z, rx, ry, rz);
 		tx[i] = -rx;
@@ -1793,56 +2085,67 @@ static void Se3InvW(DataChunk &input, Vector &result) {
 // se3_inv(W) -> W such that W_inv(W(p)) = p
 void Se3InvWFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-	if (IsFlatAndValid(input.data[0])) {
+	const bool flat = IsFlatAndValid(input.data[0]);
+	if (flat || CannotHaveNullComponents(input.data[0])) {
 		const auto &children = StructVector::GetEntries(input.data[0]);
-		FlatVec3 translations(children[0]);
-		FlatQuat rotations(children[1]);
-		double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
-		PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
-		for (idx_t i = 0; i < n; i++) {
-			auto q = rotations[i];
-			auto t = Rotate(q, translations[i]);
-			tx[i] = -t.x;
-			ty[i] = -t.y;
-			tz[i] = -t.z;
-			qw[i] = q.w;
-			qx[i] = -q.x;
-			qy[i] = -q.y;
-			qz[i] = -q.z;
+		PrepareStructChildrenFlat(result, n);
+		auto &output = StructVector::GetEntries(result);
+		double *tx, *ty, *tz;
+		PrepareVec3Out(output[0], n, tx, ty, tz);
+		auto rotate_translations = [&](const auto &translations, const auto &rotations) {
+			for (idx_t i = 0; i < n; i++) {
+				const auto t = translations[i];
+				const auto q = rotations[i];
+				QRotate(q.w, q.x, q.y, q.z, t.x, t.y, t.z, tx[i], ty[i], tz[i]);
+				tx[i] = -tx[i];
+				ty[i] = -ty[i];
+				tz[i] = -tz[i];
+			}
+		};
+		if (flat) {
+			rotate_translations(FlatVec3(children[0]), FlatQuat(children[1]));
+		} else {
+			rotate_translations(UnifiedVec3(children[0]), UnifiedQuat(children[1]));
 		}
+		// No combined NULL mask is assigned after sharing the scalar component.
+		TryNegateComponents(children[1], output[1], n, 1);
 		return;
 	}
-
-	if (CannotHaveNullComponents(input.data[0])) {
-		Se3InvW<true>(input, result);
-	} else {
-		Se3InvW<false>(input, result);
-	}
+	Se3InvW(input, result);
 }
 
 // se3_compose overloads: result equals applying B, then A
 // W = A ∘ B  with convention W(p)=R_q(p+t)
 
-template <bool ALL_VALID>
 static void Se3ComposeWW(DataChunk &input, Vector &result) {
 	const idx_t n = input.size();
-	auto left = input.data[0].Values<TransformVector>();
-	auto right = input.data[1].Values<TransformVector>();
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	const auto &a = StructVector::GetEntries(input.data[0]);
+	const auto &b = StructVector::GetEntries(input.data[1]);
+	const UnifiedVec3 a_translations(a[0]), b_translations(b[0]);
+	const UnifiedQuat a_rotations(a[1]), b_rotations(b[1]);
 	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
 	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		Vec3 at, bt;
-		Quat aq, bq;
-		if (!ReadTransform<ALL_VALID>(left[i], at, aq) || !ReadTransform<ALL_VALID>(right[i], bt, bq)) {
-			FlatVector::SetNull(result, i, true);
+		if (!all_valid && !validity.RowIsValid(i)) {
 			continue;
 		}
+		const auto at = a_translations[i];
+		const auto bq = b_rotations[i];
 		double rx, ry, rz;
 		QInvRotate(bq.w, bq.x, bq.y, bq.z, at.x, at.y, at.z, rx, ry, rz);
+		const auto bt = b_translations[i];
 		tx[i] = bt.x + rx;
 		ty[i] = bt.y + ry;
 		tz[i] = bt.z + rz;
 		double rw, rqx, rqy, rqz;
+		const auto aq = a_rotations[i];
 		QMul(aq.w, aq.x, aq.y, aq.z, bq.w, bq.x, bq.y, bq.z, rw, rqx, rqy, rqz);
 		qw[i] = rw;
 		qx[i] = rqx;
@@ -1878,11 +2181,7 @@ void Se3ComposeWWFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
-	if (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1])) {
-		Se3ComposeWW<true>(input, result);
-	} else {
-		Se3ComposeWW<false>(input, result);
-	}
+	Se3ComposeWW(input, result);
 }
 
 // se3_compose(vec3, vec3) -> vec3 (translation add)
@@ -1896,162 +2195,103 @@ void Se3ComposeQTFn(DataChunk &input, ExpressionState &, Vector &result) {
 }
 
 // se3_compose(t, q) -> W (apply q then t)
-void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) {
+static void ComposeTranslationQuaternion(DataChunk &input, Vector &result) {
 	const idx_t n = input.size();
 
-	auto &t_v = input.data[0];
-	auto &q_v = input.data[1];
-	auto &t = StructVector::GetEntries(t_v);
-	auto &q = StructVector::GetEntries(q_v);
-
-	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf, tx_uf, ty_uf, tz_uf;
-	UnifiedVectorFormat q_uf, t_uf;
-	q_v.ToUnifiedFormat(q_uf);
-	t_v.ToUnifiedFormat(t_uf);
-	q[0].ToUnifiedFormat(qw_uf);
-	q[1].ToUnifiedFormat(qx_uf);
-	q[2].ToUnifiedFormat(qy_uf);
-	q[3].ToUnifiedFormat(qz_uf);
-	t[0].ToUnifiedFormat(tx_uf);
-	t[1].ToUnifiedFormat(ty_uf);
-	t[2].ToUnifiedFormat(tz_uf);
-
-	auto *qw = (const double *)qw_uf.data;
-	auto *qx = (const double *)qx_uf.data;
-	auto *qy = (const double *)qy_uf.data;
-	auto *qz = (const double *)qz_uf.data;
-	auto *tx = (const double *)tx_uf.data;
-	auto *ty = (const double *)ty_uf.data;
-	auto *tz = (const double *)tz_uf.data;
-
-	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
-
-	const bool all_valid =
-	    q_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() &&
-	    qx_uf.validity.CannotHaveNull() && qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() &&
-	    tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(q_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
-			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) ||
-			    !RowIsValid(tz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
-		}
-		const idx_t iqw_i = qw_uf.sel->get_index(i);
-		const idx_t iqx_i = qx_uf.sel->get_index(i);
-		const idx_t iqy_i = qy_uf.sel->get_index(i);
-		const idx_t iqz_i = qz_uf.sel->get_index(i);
-		const idx_t itx_i = tx_uf.sel->get_index(i);
-		const idx_t ity_i = ty_uf.sel->get_index(i);
-		const idx_t itz_i = tz_uf.sel->get_index(i);
-
-		double rtx, rty, rtz;
-		QInvRotate(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], tx[itx_i], ty[ity_i], tz[itz_i], rtx, rty, rtz);
-		otx[i] = rtx;
-		oty[i] = rty;
-		otz[i] = rtz;
-
-		oqw[i] = qw[iqw_i];
-		oqx[i] = qx[iqx_i];
-		oqy[i] = qy[iqy_i];
-		oqz[i] = qz[iqz_i];
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
 	}
+	auto translations = input.data[0].Values<Vec3Vector>();
+	auto rotations = input.data[1].Values<QuatVector>();
+	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
+		}
+		Vec3 t;
+		Quat q;
+		ReadVec3(translations[i], t);
+		ReadQuat(rotations[i], q);
+		QInvRotate(q.w, q.x, q.y, q.z, t.x, t.y, t.z, tx[i], ty[i], tz[i]);
+		qw[i] = q.w;
+		qx[i] = q.x;
+		qy[i] = q.y;
+		qz[i] = q.z;
+	}
+}
+
+void Se3ComposeTQFn(DataChunk &input, ExpressionState &, Vector &result) {
+	const idx_t n = input.size();
+	const bool flat = IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1]);
+	if (flat || (CannotHaveNullComponents(input.data[0]) && CannotHaveNullComponents(input.data[1]))) {
+		// Initialize the parent only; prepare t below and reference q.
+		result.BufferMutable().SetVectorTypeOnly(VectorType::FLAT_VECTOR);
+		result.BufferMutable().SetVectorSizeOnly(n);
+		auto &output = StructVector::GetEntries(result);
+		double *tx, *ty, *tz;
+		PrepareVec3Out(output[0], n, tx, ty, tz);
+		output[1].Reference(input.data[1]);
+		auto rotate_translations = [&](const auto &translations, const auto &rotations) {
+			for (idx_t i = 0; i < n; i++) {
+				const auto t = translations[i];
+				const auto q = rotations[i];
+				QInvRotate(q.w, q.x, q.y, q.z, t.x, t.y, t.z, tx[i], ty[i], tz[i]);
+			}
+		};
+		if (flat) {
+			rotate_translations(FlatVec3(input.data[0]), FlatQuat(input.data[1]));
+		} else {
+			rotate_translations(UnifiedVec3(input.data[0]), UnifiedQuat(input.data[1]));
+		}
+		return;
+	}
+	ComposeTranslationQuaternion(input, result);
 }
 
 // se3_compose(W, q) -> W (apply q then W)
 void Se3ComposeWQFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
-
-	auto &w_v = input.data[0];
-	auto &q_v = input.data[1];
-	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(went[0]);
-	auto &qent = StructVector::GetEntries(went[1]);
-	auto &q2ent = StructVector::GetEntries(q_v);
-
-	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
-	UnifiedVectorFormat q2w_uf, q2x_uf, q2y_uf, q2z_uf;
-	UnifiedVectorFormat w_uf, t_uf, q_uf, q2_uf;
-
-	w_v.ToUnifiedFormat(w_uf);
-	went[0].ToUnifiedFormat(t_uf);
-	went[1].ToUnifiedFormat(q_uf);
-	q_v.ToUnifiedFormat(q2_uf);
-
-	tent[0].ToUnifiedFormat(tx_uf);
-	tent[1].ToUnifiedFormat(ty_uf);
-	tent[2].ToUnifiedFormat(tz_uf);
-	qent[0].ToUnifiedFormat(qw_uf);
-	qent[1].ToUnifiedFormat(qx_uf);
-	qent[2].ToUnifiedFormat(qy_uf);
-	qent[3].ToUnifiedFormat(qz_uf);
-
-	q2ent[0].ToUnifiedFormat(q2w_uf);
-	q2ent[1].ToUnifiedFormat(q2x_uf);
-	q2ent[2].ToUnifiedFormat(q2y_uf);
-	q2ent[3].ToUnifiedFormat(q2z_uf);
-
-	auto *tx = (const double *)tx_uf.data;
-	auto *ty = (const double *)ty_uf.data;
-	auto *tz = (const double *)tz_uf.data;
-	auto *qw = (const double *)qw_uf.data;
-	auto *qx = (const double *)qx_uf.data;
-	auto *qy = (const double *)qy_uf.data;
-	auto *qz = (const double *)qz_uf.data;
-	auto *q2w = (const double *)q2w_uf.data;
-	auto *q2x = (const double *)q2x_uf.data;
-	auto *q2y = (const double *)q2y_uf.data;
-	auto *q2z = (const double *)q2z_uf.data;
-
-	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
-
-	const bool all_valid =
-	    w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() &&
-	    q2_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
-	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
-	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && q2w_uf.validity.CannotHaveNull() &&
-	    q2x_uf.validity.CannotHaveNull() && q2y_uf.validity.CannotHaveNull() && q2z_uf.validity.CannotHaveNull();
-
-	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(w_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(q2_uf, i) ||
-			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) ||
-			    !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(q2w_uf, i) ||
-			    !RowIsValid(q2x_uf, i) || !RowIsValid(q2y_uf, i) || !RowIsValid(q2z_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+	if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+		const auto &transform = StructVector::GetEntries(input.data[0]);
+		const FlatVec3 translations(transform[0]);
+		const FlatQuat left_rotations(transform[1]), right_rotations(input.data[1]);
+		double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+		PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+		for (idx_t i = 0; i < n; i++) {
+			const auto t = translations[i];
+			const auto a = left_rotations[i], b = right_rotations[i];
+			QInvRotate(b.w, b.x, b.y, b.z, t.x, t.y, t.z, tx[i], ty[i], tz[i]);
+			QMul(a.w, a.x, a.y, a.z, b.w, b.x, b.y, b.z, qw[i], qx[i], qy[i], qz[i]);
 		}
-		const idx_t itx_i = tx_uf.sel->get_index(i);
-		const idx_t ity_i = ty_uf.sel->get_index(i);
-		const idx_t itz_i = tz_uf.sel->get_index(i);
-		const idx_t iqw_i = qw_uf.sel->get_index(i);
-		const idx_t iqx_i = qx_uf.sel->get_index(i);
-		const idx_t iqy_i = qy_uf.sel->get_index(i);
-		const idx_t iqz_i = qz_uf.sel->get_index(i);
-		const idx_t iq2w_i = q2w_uf.sel->get_index(i);
-		const idx_t iq2x_i = q2x_uf.sel->get_index(i);
-		const idx_t iq2y_i = q2y_uf.sel->get_index(i);
-		const idx_t iq2z_i = q2z_uf.sel->get_index(i);
+		return;
+	}
 
-		double rtx, rty, rtz;
-		QInvRotate(q2w[iq2w_i], q2x[iq2x_i], q2y[iq2y_i], q2z[iq2z_i], tx[itx_i], ty[ity_i], tz[itz_i], rtx, rty, rtz);
-		otx[i] = rtx;
-		oty[i] = rty;
-		otz[i] = rtz;
-
-		double rw, rx, ry, rz;
-		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], q2w[iq2w_i], q2x[iq2x_i], q2y[iq2y_i], q2z[iq2z_i], rw, rx, ry,
-		     rz);
-		oqw[i] = rw;
-		oqx[i] = rx;
-		oqy[i] = ry;
-		oqz[i] = rz;
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	auto transforms = input.data[0].Values<TransformVector>();
+	auto rotations = input.data[1].Values<QuatVector>();
+	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
+	for (idx_t i = 0; i < n; i++) {
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
+		}
+		Vec3 t;
+		Quat a, b;
+		ReadTransform(transforms[i], t, a);
+		ReadQuat(rotations[i], b);
+		QInvRotate(b.w, b.x, b.y, b.z, t.x, t.y, t.z, tx[i], ty[i], tz[i]);
+		QMul(a.w, a.x, a.y, a.z, b.w, b.x, b.y, b.z, qw[i], qx[i], qy[i], qz[i]);
 	}
 }
 
@@ -2067,89 +2307,29 @@ void Se3ComposeQWFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
-	auto &q_v = input.data[0];
-	auto &w_v = input.data[1];
-	auto &qent = StructVector::GetEntries(q_v);
-	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(went[0]);
-	auto &wqent = StructVector::GetEntries(went[1]);
-
-	UnifiedVectorFormat qw_uf, qx_uf, qy_uf, qz_uf;
-	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, wqw_uf, wqx_uf, wqy_uf, wqz_uf;
-	UnifiedVectorFormat q_uf, w_uf, t_uf, wq_uf;
-
-	q_v.ToUnifiedFormat(q_uf);
-	w_v.ToUnifiedFormat(w_uf);
-	went[0].ToUnifiedFormat(t_uf);
-	went[1].ToUnifiedFormat(wq_uf);
-
-	qent[0].ToUnifiedFormat(qw_uf);
-	qent[1].ToUnifiedFormat(qx_uf);
-	qent[2].ToUnifiedFormat(qy_uf);
-	qent[3].ToUnifiedFormat(qz_uf);
-	tent[0].ToUnifiedFormat(tx_uf);
-	tent[1].ToUnifiedFormat(ty_uf);
-	tent[2].ToUnifiedFormat(tz_uf);
-	wqent[0].ToUnifiedFormat(wqw_uf);
-	wqent[1].ToUnifiedFormat(wqx_uf);
-	wqent[2].ToUnifiedFormat(wqy_uf);
-	wqent[3].ToUnifiedFormat(wqz_uf);
-
-	auto *qw = (const double *)qw_uf.data;
-	auto *qx = (const double *)qx_uf.data;
-	auto *qy = (const double *)qy_uf.data;
-	auto *qz = (const double *)qz_uf.data;
-	auto *tx = (const double *)tx_uf.data;
-	auto *ty = (const double *)ty_uf.data;
-	auto *tz = (const double *)tz_uf.data;
-	auto *wqw = (const double *)wqw_uf.data;
-	auto *wqx = (const double *)wqx_uf.data;
-	auto *wqy = (const double *)wqy_uf.data;
-	auto *wqz = (const double *)wqz_uf.data;
-
-	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
-
-	const bool all_valid =
-	    q_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() &&
-	    wq_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
-	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() &&
-	    ty_uf.validity.CannotHaveNull() && tz_uf.validity.CannotHaveNull() && wqw_uf.validity.CannotHaveNull() &&
-	    wqx_uf.validity.CannotHaveNull() && wqy_uf.validity.CannotHaveNull() && wqz_uf.validity.CannotHaveNull();
-
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	auto rotations = input.data[0].Values<QuatVector>();
+	auto transforms = input.data[1].Values<TransformVector>();
+	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(q_uf, i) || !RowIsValid(w_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(wq_uf, i) ||
-			    !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) ||
-			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(wqw_uf, i) ||
-			    !RowIsValid(wqx_uf, i) || !RowIsValid(wqy_uf, i) || !RowIsValid(wqz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
-		const idx_t itx_i = tx_uf.sel->get_index(i);
-		const idx_t ity_i = ty_uf.sel->get_index(i);
-		const idx_t itz_i = tz_uf.sel->get_index(i);
-		const idx_t iwqw_i = wqw_uf.sel->get_index(i);
-		const idx_t iwqx_i = wqx_uf.sel->get_index(i);
-		const idx_t iwqy_i = wqy_uf.sel->get_index(i);
-		const idx_t iwqz_i = wqz_uf.sel->get_index(i);
-		const idx_t iqw_i = qw_uf.sel->get_index(i);
-		const idx_t iqx_i = qx_uf.sel->get_index(i);
-		const idx_t iqy_i = qy_uf.sel->get_index(i);
-		const idx_t iqz_i = qz_uf.sel->get_index(i);
-
-		otx[i] = tx[itx_i];
-		oty[i] = ty[ity_i];
-		otz[i] = tz[itz_i];
-
-		double rw, rx, ry, rz;
-		QMul(qw[iqw_i], qx[iqx_i], qy[iqy_i], qz[iqz_i], wqw[iwqw_i], wqx[iwqx_i], wqy[iwqy_i], wqz[iwqz_i], rw, rx, ry,
-		     rz);
-		oqw[i] = rw;
-		oqx[i] = rx;
-		oqy[i] = ry;
-		oqz[i] = rz;
+		Vec3 t;
+		Quat a, b;
+		ReadQuat(rotations[i], a);
+		ReadTransform(transforms[i], t, b);
+		tx[i] = t.x;
+		ty[i] = t.y;
+		tz[i] = t.z;
+		QMul(a.w, a.x, a.y, a.z, b.w, b.x, b.y, b.z, qw[i], qx[i], qy[i], qz[i]);
 	}
 }
 
@@ -2165,90 +2345,66 @@ void Se3ComposeWTFn(DataChunk &input, ExpressionState &, Vector &result) {
 		return;
 	}
 
-	auto &w_v = input.data[0];
-	auto &t_v = input.data[1];
-	auto &went = StructVector::GetEntries(w_v);
-	auto &tent = StructVector::GetEntries(went[0]);
-	auto &qent = StructVector::GetEntries(went[1]);
-	auto &t2 = StructVector::GetEntries(t_v);
-
-	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
-	UnifiedVectorFormat t2x_uf, t2y_uf, t2z_uf;
-	UnifiedVectorFormat w_uf, t_uf, q_uf, t2_uf;
-
-	w_v.ToUnifiedFormat(w_uf);
-	went[0].ToUnifiedFormat(t_uf);
-	went[1].ToUnifiedFormat(q_uf);
-	t_v.ToUnifiedFormat(t2_uf);
-
-	tent[0].ToUnifiedFormat(tx_uf);
-	tent[1].ToUnifiedFormat(ty_uf);
-	tent[2].ToUnifiedFormat(tz_uf);
-	qent[0].ToUnifiedFormat(qw_uf);
-	qent[1].ToUnifiedFormat(qx_uf);
-	qent[2].ToUnifiedFormat(qy_uf);
-	qent[3].ToUnifiedFormat(qz_uf);
-
-	t2[0].ToUnifiedFormat(t2x_uf);
-	t2[1].ToUnifiedFormat(t2y_uf);
-	t2[2].ToUnifiedFormat(t2z_uf);
-
-	auto *tx = (const double *)tx_uf.data;
-	auto *ty = (const double *)ty_uf.data;
-	auto *tz = (const double *)tz_uf.data;
-	auto *qw = (const double *)qw_uf.data;
-	auto *qx = (const double *)qx_uf.data;
-	auto *qy = (const double *)qy_uf.data;
-	auto *qz = (const double *)qz_uf.data;
-	auto *t2x = (const double *)t2x_uf.data;
-	auto *t2y = (const double *)t2y_uf.data;
-	auto *t2z = (const double *)t2z_uf.data;
-
-	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
-	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
-
-	const bool all_valid =
-	    w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() && q_uf.validity.CannotHaveNull() &&
-	    t2_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
-	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
-	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull() && t2x_uf.validity.CannotHaveNull() &&
-	    t2y_uf.validity.CannotHaveNull() && t2z_uf.validity.CannotHaveNull();
-
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
+	auto transforms = input.data[0].Values<TransformVector>();
+	auto translations = input.data[1].Values<Vec3Vector>();
+	double *tx, *ty, *tz, *qw, *qx, *qy, *qz;
+	PrepareWOut(result, n, tx, ty, tz, qw, qx, qy, qz);
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(w_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) || !RowIsValid(t2_uf, i) ||
-			    !RowIsValid(tx_uf, i) || !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) ||
-			    !RowIsValid(qx_uf, i) || !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i) || !RowIsValid(t2x_uf, i) ||
-			    !RowIsValid(t2y_uf, i) || !RowIsValid(t2z_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
-		const idx_t itx_i = tx_uf.sel->get_index(i);
-		const idx_t ity_i = ty_uf.sel->get_index(i);
-		const idx_t itz_i = tz_uf.sel->get_index(i);
-		const idx_t it2x_i = t2x_uf.sel->get_index(i);
-		const idx_t it2y_i = t2y_uf.sel->get_index(i);
-		const idx_t it2z_i = t2z_uf.sel->get_index(i);
-		const idx_t iqw_i = qw_uf.sel->get_index(i);
-		const idx_t iqx_i = qx_uf.sel->get_index(i);
-		const idx_t iqy_i = qy_uf.sel->get_index(i);
-		const idx_t iqz_i = qz_uf.sel->get_index(i);
-
-		otx[i] = tx[itx_i] + t2x[it2x_i];
-		oty[i] = ty[ity_i] + t2y[it2y_i];
-		otz[i] = tz[itz_i] + t2z[it2z_i];
-
-		oqw[i] = qw[iqw_i];
-		oqx[i] = qx[iqx_i];
-		oqy[i] = qy[iqy_i];
-		oqz[i] = qz[iqz_i];
+		Vec3 t, offset;
+		Quat q;
+		ReadTransform(transforms[i], t, q);
+		ReadVec3(translations[i], offset);
+		tx[i] = t.x + offset.x;
+		ty[i] = t.y + offset.y;
+		tz[i] = t.z + offset.z;
+		qw[i] = q.w;
+		qx[i] = q.x;
+		qy[i] = q.y;
+		qz[i] = q.z;
 	}
 }
 
 // se3_compose(t, W) -> W (apply W then t)
 void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) {
 	const idx_t n = input.size();
+	if (IsFlatAndValid(input.data[0]) && IsFlatAndValid(input.data[1])) {
+		const auto &transform = StructVector::GetEntries(input.data[1]);
+		const FlatVec3 translations(input.data[0]), offsets(transform[0]);
+		const FlatQuat rotations(transform[1]);
+		// Initialize the parent only; prepare t below and reference q.
+		result.BufferMutable().SetVectorTypeOnly(VectorType::FLAT_VECTOR);
+		result.BufferMutable().SetVectorSizeOnly(n);
+		auto &output = StructVector::GetEntries(result);
+		double *tx, *ty, *tz;
+		PrepareVec3Out(output[0], n, tx, ty, tz);
+		output[1].Reference(transform[1]);
+		for (idx_t i = 0; i < n; i++) {
+			const auto t = translations[i], offset = offsets[i];
+			const auto q = rotations[i];
+			double rx, ry, rz;
+			QInvRotate(q.w, q.x, q.y, q.z, t.x, t.y, t.z, rx, ry, rz);
+			tx[i] = offset.x + rx;
+			ty[i] = offset.y + ry;
+			tz[i] = offset.z + rz;
+		}
+		return;
+	}
+
+	const auto validity = InputValidity(n, {&input.data[0], &input.data[1]});
+	if (validity.CheckAllInvalid(n)) {
+		ConstantVector::SetNull(result, count_t(n));
+		return;
+	}
 
 	auto &t_v = input.data[0];
 	auto &w_v = input.data[1];
@@ -2259,12 +2415,6 @@ void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) {
 
 	UnifiedVectorFormat t2x_uf, t2y_uf, t2z_uf;
 	UnifiedVectorFormat tx_uf, ty_uf, tz_uf, qw_uf, qx_uf, qy_uf, qz_uf;
-	UnifiedVectorFormat t2_uf, w_uf, t_uf, q_uf;
-
-	t_v.ToUnifiedFormat(t2_uf);
-	w_v.ToUnifiedFormat(w_uf);
-	went[0].ToUnifiedFormat(t_uf);
-	went[1].ToUnifiedFormat(q_uf);
 
 	t2[0].ToUnifiedFormat(t2x_uf);
 	t2[1].ToUnifiedFormat(t2y_uf);
@@ -2292,22 +2442,12 @@ void Se3ComposeTWFn(DataChunk &input, ExpressionState &, Vector &result) {
 	double *otx, *oty, *otz, *oqw, *oqx, *oqy, *oqz;
 	PrepareWOut(result, n, otx, oty, otz, oqw, oqx, oqy, oqz);
 
-	const bool all_valid =
-	    t2_uf.validity.CannotHaveNull() && w_uf.validity.CannotHaveNull() && t_uf.validity.CannotHaveNull() &&
-	    q_uf.validity.CannotHaveNull() && t2x_uf.validity.CannotHaveNull() && t2y_uf.validity.CannotHaveNull() &&
-	    t2z_uf.validity.CannotHaveNull() && tx_uf.validity.CannotHaveNull() && ty_uf.validity.CannotHaveNull() &&
-	    tz_uf.validity.CannotHaveNull() && qw_uf.validity.CannotHaveNull() && qx_uf.validity.CannotHaveNull() &&
-	    qy_uf.validity.CannotHaveNull() && qz_uf.validity.CannotHaveNull();
+	SetResultValidity(result, validity);
+	const bool all_valid = validity.CannotHaveNull();
 
 	for (idx_t i = 0; i < n; i++) {
-		if (!all_valid) {
-			if (!RowIsValid(t2_uf, i) || !RowIsValid(w_uf, i) || !RowIsValid(t_uf, i) || !RowIsValid(q_uf, i) ||
-			    !RowIsValid(t2x_uf, i) || !RowIsValid(t2y_uf, i) || !RowIsValid(t2z_uf, i) || !RowIsValid(tx_uf, i) ||
-			    !RowIsValid(ty_uf, i) || !RowIsValid(tz_uf, i) || !RowIsValid(qw_uf, i) || !RowIsValid(qx_uf, i) ||
-			    !RowIsValid(qy_uf, i) || !RowIsValid(qz_uf, i)) {
-				FlatVector::SetNull(result, i, true);
-				continue;
-			}
+		if (!all_valid && !validity.RowIsValid(i)) {
+			continue;
 		}
 		const idx_t it2x_i = t2x_uf.sel->get_index(i);
 		const idx_t it2y_i = t2y_uf.sel->get_index(i);

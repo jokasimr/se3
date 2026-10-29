@@ -109,6 +109,8 @@ endloop
 endloop
 
 # Valid constant operands and mixed constant/selected components.
+foreach mode flat selected
+
 query IIIII
 WITH results AS MATERIALIZED (
   SELECT i, {fn}(vvec(i,2,-3),vvec(2,0,0)) AS v3,
@@ -116,7 +118,7 @@ WITH results AS MATERIALIZED (
          {fn}(vvec(6,2,-3),vvec(2+i%2,0,0)) AS fixed3,
          {fn}(vvec(6,2,-3,4),vvec(2+i%2,0,0,0)) AS fixed4,
          {fn}3 AS expected3, {fn}4 AS expected4
-  FROM projection_inputs WHERE i % 3 <> 1
+  FROM projection_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
 )
 SELECT count(*) FILTER (WHERE v3 IS DISTINCT FROM expected3),
        count(*) FILTER (WHERE v4 IS DISTINCT FROM expected4),
@@ -124,10 +126,12 @@ SELECT count(*) FILTER (WHERE v3 IS DISTINCT FROM expected3),
          CASE WHEN '{fn}' = 'vproj' THEN vvec(6,0,0) ELSE vvec(0,2,-3) END),
        count(*) FILTER (WHERE fixed4 IS DISTINCT FROM
          CASE WHEN '{fn}' = 'vproj' THEN vvec(6,0,0,0) ELSE vvec(0,2,-3,4) END),
-       count(*)
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
 FROM results;
 ----
-0	0	0	0	5465
+0	0	0	0	true
+
+endloop
 
 endloop
 
@@ -184,3 +188,57 @@ endloop
 
 statement ok
 RESET disabled_optimizers;
+
+# Stored non-NULL vectors exercise the flat paths, including numerical fallbacks.
+statement ok
+CREATE TABLE flat_projections AS
+SELECT i, CASE i%5 WHEN 0 THEN 0.0 WHEN 1 THEN 1.0 WHEN 2 THEN 1e300
+                  WHEN 3 THEN 1e-300 ELSE 1e-320 END AS scale,
+       vvec(i+1,2,-3) AS a3, vvec(scale,0,0) AS b3,
+       vvec(i+1,2,-3,4) AS a4, vvec(scale,0,0,0) AS b4
+FROM range(8197) r(i);
+
+query IIIII
+WITH results AS MATERIALIZED (
+  SELECT *, vproj(a3,b3) AS p3, vrej(a3,b3) AS r3,
+         vproj(a4,b4) AS p4, vrej(a4,b4) AS r4
+  FROM flat_projections
+)
+SELECT count(*) FILTER (WHERE (CASE WHEN scale=0 THEN isnan(p3.x) AND isnan(p3.y) AND isnan(p3.z)
+       ELSE abs(p3.x/a3.x-1)<1e-12 AND p3.y=0 AND p3.z=0 END) IS NOT TRUE),
+       count(*) FILTER (WHERE (CASE WHEN scale=0 THEN isnan(r3.x) AND isnan(r3.y) AND isnan(r3.z)
+       ELSE abs(r3.x/a3.x)<1e-12 AND r3.y=2 AND r3.z=-3 END) IS NOT TRUE),
+       count(*) FILTER (WHERE (CASE WHEN scale=0 THEN isnan(p4.w) AND isnan(p4.x) AND isnan(p4.y) AND isnan(p4.z)
+       ELSE abs(p4.w/a4.w-1)<1e-12 AND p4.x=0 AND p4.y=0 AND p4.z=0 END) IS NOT TRUE),
+       count(*) FILTER (WHERE (CASE WHEN scale=0 THEN isnan(r4.w) AND isnan(r4.x) AND isnan(r4.y) AND isnan(r4.z)
+       ELSE abs(r4.w/a4.w)<1e-12 AND r4.x=2 AND r4.y=-3 AND r4.z=4 END) IS NOT TRUE), count(*)
+FROM results;
+----
+0	0	0	0	8197
+
+# Whole-vector and component constants use the same numerical fallbacks.
+foreach fn vproj vrej
+
+query IIII
+WITH results AS MATERIALIZED (
+  SELECT *, {fn}(vvec(6,2,-3),b3) AS fixed_left,
+         {fn}(a3,vvec(2,0,0)) AS fixed_right,
+         {fn}(struct_pack(x:=1.0,y:=a3.x,z:=2*a3.x),
+              struct_pack(x:=2.0,y:=2*a3.x,z:=4*a3.x)) AS partial
+  FROM flat_projections
+)
+SELECT count(*) FILTER (WHERE (CASE WHEN scale=0 THEN
+         isnan(fixed_left.x) AND isnan(fixed_left.y) AND isnan(fixed_left.z)
+       WHEN '{fn}'='vproj' THEN abs(fixed_left.x/6-1)<1e-12 AND fixed_left.y=0 AND fixed_left.z=0
+       ELSE abs(fixed_left.x)<1e-12 AND fixed_left.y=2 AND fixed_left.z=-3 END) IS NOT TRUE),
+       count(*) FILTER (WHERE (CASE WHEN '{fn}'='vproj' THEN
+         abs(fixed_right.x/a3.x-1)<1e-12 AND fixed_right.y=0 AND fixed_right.z=0
+       ELSE abs(fixed_right.x)<1e-12 AND fixed_right.y=2 AND fixed_right.z=-3 END) IS NOT TRUE),
+       count(*) FILTER (WHERE partial IS DISTINCT FROM
+         CASE WHEN '{fn}'='vproj' THEN vvec(1,a3.x,2*a3.x) ELSE vvec(0,0,0) END),
+       count(*)=8197
+FROM results;
+----
+0	0	0	true
+
+endloop
