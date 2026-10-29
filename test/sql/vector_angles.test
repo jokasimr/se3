@@ -292,10 +292,10 @@ foreach function vcos_angle vsin_angle vtan_angle vcot_angle vangle
 # Zero and non-finite vectors produce NaN in either argument.
 query IIII
 SELECT
-  bool_and(isnan({function}(vvec(x, 0, 0), vvec(1, 2, 3)))),
-  bool_and(isnan({function}(vvec(1, 2, 3), vvec(0, x, 0)))),
-  bool_and(isnan({function}(vvec(0, 0, x, 0), vvec(1, 2, 3, 4)))),
-  bool_and(isnan({function}(vvec(1, 2, 3, 4), vvec(0, 0, 0, x))))
+  bool_and((isnan({function}(vvec(x, 0, 0), vvec(1, 2, 3)))) IS TRUE),
+  bool_and((isnan({function}(vvec(1, 2, 3), vvec(0, x, 0)))) IS TRUE),
+  bool_and((isnan({function}(vvec(0, 0, x, 0), vvec(1, 2, 3, 4)))) IS TRUE),
+  bool_and((isnan({function}(vvec(1, 2, 3, 4), vvec(0, 0, 0, x)))) IS TRUE)
 FROM (VALUES (0.0), ('nan'::DOUBLE), ('inf'::DOUBLE), ('-inf'::DOUBLE)) inputs(x);
 ----
 true	true	true	true

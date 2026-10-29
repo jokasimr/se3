@@ -5,6 +5,18 @@
 #include <cmath>
 #include <limits>
 
+// Exceptional numerical fallbacks must stay outside the common row loops.
+#if defined(_MSC_VER)
+#define SE3_NOINLINE __declspec(noinline)
+#define SE3_INLINE   __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define SE3_NOINLINE __attribute__((noinline))
+#define SE3_INLINE   inline __attribute__((always_inline))
+#else
+#define SE3_NOINLINE
+#define SE3_INLINE inline
+#endif
+
 namespace duckdb {
 namespace se3 {
 
@@ -462,9 +474,32 @@ static inline double ProjectionComponent(double a, double b, double coefficient)
 	return REJECT ? a - b * coefficient : b * coefficient;
 }
 
+// Keep exceptional magnitudes out of the per-row common calculation.
+template <std::size_t N, bool REJECT>
+SE3_NOINLINE static std::array<double, N> ProjectionFallback(const std::array<double, N> &a,
+                                                             const std::array<double, N> &b,
+                                                             const std::array<double, N> &unscaled) {
+	double bscale = 0.0;
+	bool zero_a = true;
+	for (std::size_t i = 0; i < N; i++) {
+		if (!std::isfinite(a[i]) || !std::isfinite(b[i])) {
+			return unscaled;
+		}
+		bscale = std::max(bscale, std::abs(b[i]));
+		zero_a = zero_a && a[i] == 0.0;
+	}
+	if (bscale == 0.0) {
+		return unscaled;
+	}
+	if (zero_a) {
+		return {};
+	}
+	return ScaledProjection<N, REJECT>(a, b, bscale);
+}
+
 template <bool REJECT = false>
-static inline void Projection3(double ax, double ay, double az, double bx, double by, double bz, double &ox, double &oy,
-                               double &oz) {
+SE3_INLINE static void Projection3(double ax, double ay, double az, double bx, double by, double bz, double &ox,
+                                   double &oy, double &oz) {
 	const double bn2 = bx * bx + by * by + bz * bz;
 	const double dot = ax * bx + ay * by + az * bz;
 	const double s = dot / bn2;
@@ -478,27 +513,15 @@ static inline void Projection3(double ax, double ay, double az, double bx, doubl
 	      ProductCannotUnderflow(az, bz)))) {
 		return;
 	}
-	if (!AllFinite3(ax, ay, az) || !AllFinite3(bx, by, bz)) {
-		return;
-	}
-
-	const double bscale = MaxAbs3(bx, by, bz);
-	if (bscale == 0.0) {
-		return;
-	}
-	if (ax == 0.0 && ay == 0.0 && az == 0.0) {
-		ox = oy = oz = 0.0;
-		return;
-	}
-	const auto projected = ScaledProjection<3, REJECT>({ax, ay, az}, {bx, by, bz}, bscale);
+	const auto projected = ProjectionFallback<3, REJECT>({ax, ay, az}, {bx, by, bz}, {ox, oy, oz});
 	ox = projected[0];
 	oy = projected[1];
 	oz = projected[2];
 }
 
 template <bool REJECT = false>
-static inline void Projection4(double aw, double ax, double ay, double az, double bw, double bx, double by, double bz,
-                               double &ow, double &ox, double &oy, double &oz) {
+SE3_INLINE static void Projection4(double aw, double ax, double ay, double az, double bw, double bx, double by,
+                                   double bz, double &ow, double &ox, double &oy, double &oz) {
 	const double bn2 = bw * bw + bx * bx + by * by + bz * bz;
 	const double dot = aw * bw + ax * bx + ay * by + az * bz;
 	const double s = dot / bn2;
@@ -513,30 +536,15 @@ static inline void Projection4(double aw, double ax, double ay, double az, doubl
 	      ProductCannotUnderflow(ay, by) && ProductCannotUnderflow(az, bz)))) {
 		return;
 	}
-	if (!AllFinite4(aw, ax, ay, az) || !AllFinite4(bw, bx, by, bz)) {
-		return;
-	}
-
-	const double bscale = MaxAbs4(bw, bx, by, bz);
-	if (bscale == 0.0) {
-		return;
-	}
-	if (aw == 0.0 && ax == 0.0 && ay == 0.0 && az == 0.0) {
-		ow = ox = oy = oz = 0.0;
-		return;
-	}
-	const auto projected = ScaledProjection<4, REJECT>({aw, ax, ay, az}, {bw, bx, by, bz}, bscale);
+	const auto projected = ProjectionFallback<4, REJECT>({aw, ax, ay, az}, {bw, bx, by, bz}, {ow, ox, oy, oz});
 	ow = projected[0];
 	ox = projected[1];
 	oy = projected[2];
 	oz = projected[3];
 }
 
-static Vec3 Rotate(const Quat &q, const Vec3 &p) {
-	Vec3 result;
-	QRotate(q.w, q.x, q.y, q.z, p.x, p.y, p.z, result.x, result.y, result.z);
-	return result;
-}
-
 } // namespace se3
 } // namespace duckdb
+
+#undef SE3_NOINLINE
+#undef SE3_INLINE

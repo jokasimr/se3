@@ -1,0 +1,267 @@
+# name: test/sql/composition_execution.test
+# description: Mixed composition overloads on flat, selected and constant inputs
+# group: [sql]
+
+require se3
+
+# Non-unit quaternions about z have an analytical inverse-rotation formula.
+# Store every component so the flat path runs across full and partial chunks.
+statement ok
+CREATE TABLE compose_inputs AS
+SELECT i, vvec(i+1, 2*i-3, -i) AS t, vvec(3-i, 5*i, -7) AS shift,
+       vvec(i%3+1, 0, 0, i%5-2) AS q,
+       se3_make(t, vvec(2,3,5,7)) AS a, se3_make(shift,q) AS b
+FROM range(8197) r(i);
+
+foreach mode flat selected
+
+query IIIIIII
+WITH results AS MATERIALIZED (
+  SELECT *, se3_compose(t,q) AS tq, se3_compose(a,q) AS aq,
+         se3_compose(t,b) AS tb,
+         (1-2*q.z*q.z)*t.x + 2*q.w*q.z*t.y AS rx,
+         (1-2*q.z*q.z)*t.y - 2*q.w*q.z*t.x AS ry
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE tq.t IS DISTINCT FROM vvec(rx,ry,t.z)),
+       count(*) FILTER (WHERE tq.q IS DISTINCT FROM q),
+       count(*) FILTER (WHERE aq.t IS DISTINCT FROM vvec(rx,ry,t.z)),
+       count(*) FILTER (WHERE aq.q IS DISTINCT FROM
+         vvec(2*q.w-7*q.z, 3*q.w+5*q.z, 5*q.w-3*q.z, 2*q.z+7*q.w)),
+       count(*) FILTER (WHERE tb.t IS DISTINCT FROM vvec(shift.x+rx,shift.y+ry,shift.z+t.z)),
+       count(*) FILTER (WHERE tb.q IS DISTINCT FROM q),
+       count(*) = CASE WHEN '{mode}' = 'flat' THEN 8197 ELSE 5465 END
+FROM results;
+----
+0	0	0	0	0	0	true
+
+endloop
+
+# Keep constant arguments in the execution tests.
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+# Mixed components may share q only when the translation is also non-NULL.
+foreach mode flat selected
+
+query IIII
+WITH inputs AS (
+  SELECT *, struct_pack(x:=2.0,y:=t.y,z:=t.z) AS translation,
+         struct_pack(w:=2.0,x:=0.0,y:=0.0,z:=q.z) AS rotation
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+), results AS MATERIALIZED (
+  SELECT *, se3_compose(translation,rotation) AS partial,
+         se3_compose(vvec(2,3,4),q) AS constant_t,
+         se3_compose(struct_pack(x:=2.0,y:=CASE WHEN i%2=0 THEN NULL ELSE t.y END,z:=t.z),rotation) AS nullable,
+         struct_pack(t:=vvec(2*(1-2*q.z*q.z)+4*q.z*t.y,
+                             (1-2*q.z*q.z)*t.y-8*q.z,t.z),q:=rotation) AS expected
+  FROM inputs
+)
+SELECT count(*) FILTER (WHERE partial IS DISTINCT FROM expected),
+       count(*) FILTER (WHERE constant_t IS DISTINCT FROM
+         struct_pack(t:=vvec(2*(1-2*q.z*q.z)+6*q.w*q.z,
+                             3*(1-2*q.z*q.z)-4*q.w*q.z,4),q:=q)),
+       count(*) FILTER (WHERE nullable IS DISTINCT FROM CASE WHEN i%2=0 THEN NULL ELSE expected END),
+       count(*) FILTER (WHERE rotation.w IS NULL OR rotation.x IS NULL OR rotation.y IS NULL OR rotation.z IS NULL)
+FROM results;
+----
+0	0	0	0
+
+endloop
+
+# Applying a constant transform follows the same raw rotation convention.
+foreach mode flat selected
+
+query III
+WITH results AS MATERIALIZED (
+  SELECT *, se3_apply(struct_pack(t:=vvec(2,3,4),q:=vvec(2,0,0,1)),t) AS applied,
+         se3_apply(struct_pack(t:=vvec(2,3,4),q:=vvec(2,0,0,1)),
+                   struct_pack(x:=t.x,y:=CASE WHEN i%2=0 THEN NULL ELSE t.y END,z:=t.z)) AS nullable,
+         se3_apply(struct_pack(t:=vvec(2,3,4),q:=struct_pack(w:=2.0,x:=NULL::DOUBLE,y:=0.0,z:=1.0)),t) AS invalid
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE applied IS DISTINCT FROM
+         vvec(-(t.x+2)-4*(t.y+3),-(t.y+3)+4*(t.x+2),t.z+4)),
+       count(*) FILTER (WHERE nullable IS DISTINCT FROM
+         CASE WHEN i%2=0 THEN NULL ELSE vvec(-(t.x+2)-4*(t.y+3),-(t.y+3)+4*(t.x+2),t.z+4) END),
+       count(invalid)
+FROM results;
+----
+0	0	0
+
+query II
+WITH results AS MATERIALIZED (
+  SELECT *, se3_apply(a,vvec(2,3,4)) AS fixed_point,
+         se3_apply(a,struct_pack(x:=2.0,y:=NULL::DOUBLE,z:=4.0)) AS invalid_point
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE fixed_point IS DISTINCT FROM
+         vvec(-147*(t.x+2)+2*(t.y+3)+62*(t.z+4),
+               58*(t.x+2)-115*(t.y+3)+58*(t.z+4),
+               22*(t.x+2)+82*(t.y+3)-67*(t.z+4))),
+       count(invalid_point)
+FROM results;
+----
+0	0
+
+query I
+WITH results AS MATERIALIZED (
+  SELECT *, se3_apply(struct_pack(t:=struct_pack(x:=2.0,y:=t.y,z:=t.z),q:=a.q),
+                      struct_pack(x:=4.0,y:=t.x,z:=t.y)) AS partial
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE partial IS DISTINCT FROM
+         vvec(-882+2*t.x+64*t.y+62*t.z,
+               348-115*t.x-57*t.y+58*t.z,
+               132+82*t.x+15*t.y-67*t.z))
+FROM results;
+----
+0
+
+endloop
+
+# Quaternion multiplication preserves operand order with constants on either side.
+foreach mode flat selected
+
+query IIII
+WITH inputs AS (
+  SELECT *, struct_pack(w:=q.w,x:=3.0,y:=5.0,z:=q.z) AS rotation
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+), results AS MATERIALIZED (
+  SELECT *, qmul(rotation,vvec(2,0,0,1)) AS right_constant,
+         qmul(vvec(2,0,0,1),rotation) AS left_constant,
+         se3_compose(rotation,vvec(2,0,0,1)) AS composed,
+         qmul(rotation,struct_pack(w:=2.0,x:=NULL::DOUBLE,y:=0.0,z:=1.0)) AS invalid
+  FROM inputs
+)
+SELECT count(*) FILTER (WHERE right_constant IS DISTINCT FROM vvec(2*q.w-q.z,11,7,q.w+2*q.z)),
+       count(*) FILTER (WHERE left_constant IS DISTINCT FROM vvec(2*q.w-q.z,1,13,q.w+2*q.z)),
+       count(*) FILTER (WHERE composed IS DISTINCT FROM vvec(2*q.w-q.z,11,7,q.w+2*q.z)),
+       count(invalid)
+FROM results;
+----
+0	0	0	0
+
+endloop
+
+# Full transforms support either constant operand without normalizing rotations.
+foreach mode flat selected
+
+query III
+WITH results AS MATERIALIZED (
+  SELECT *, se3_compose(a,b) AS flat,
+         se3_compose(struct_pack(t:=vvec(2,3,4),q:=vvec(2,3,5,7)),b) AS constant_a,
+         se3_compose(a,struct_pack(t:=vvec(2,3,4),q:=vvec(2,0,0,1))) AS constant_b,
+         vvec(2*q.w-7*q.z,3*q.w+5*q.z,5*q.w-3*q.z,2*q.z+7*q.w) AS product
+  FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+)
+SELECT count(*) FILTER (WHERE flat IS DISTINCT FROM
+         struct_pack(t:=vvec(shift.x+(1-2*q.z*q.z)*t.x+2*q.w*q.z*t.y,
+                             shift.y+(1-2*q.z*q.z)*t.y-2*q.w*q.z*t.x,shift.z+t.z),q:=product)),
+       count(*) FILTER (WHERE constant_a IS DISTINCT FROM
+         struct_pack(t:=vvec(shift.x+2*(1-2*q.z*q.z)+6*q.w*q.z,
+                             shift.y+3*(1-2*q.z*q.z)-4*q.w*q.z,shift.z+4),q:=product)),
+       count(*) FILTER (WHERE constant_b IS DISTINCT FROM
+         struct_pack(t:=vvec(2-t.x+4*t.y,3-t.y-4*t.x,4+t.z),q:=vvec(-3,11,7,16)))
+FROM results;
+----
+0	0	0
+
+
+endloop
+
+# Inversion also supports independently constant nested structs and components.
+# Use a non-unit quaternion about z to check the raw rotation convention.
+foreach mode flat selected
+
+query IIII
+WITH inputs AS (
+  SELECT t, q FROM compose_inputs WHERE '{mode}' = 'flat' OR i % 3 <> 1
+), results AS MATERIALIZED (
+  SELECT *, se3_inv(struct_pack(t:=struct_pack(x:=2.0,y:=t.y,z:=t.z),q:=q)) AS mixed,
+         se3_inv(struct_pack(t:=vvec(2,3,4),q:=q)) AS constant_t,
+         se3_inv(struct_pack(t:=t,q:=vvec(2,0,0,1))) AS constant_q,
+         se3_inv(struct_pack(t:=t,q:=struct_pack(w:=2.0,x:=0.0,y:=NULL::DOUBLE,z:=1.0))) AS invalid
+  FROM inputs
+)
+SELECT count(*) FILTER (WHERE mixed IS DISTINCT FROM
+         struct_pack(t:=vvec(-2*(1-2*q.z*q.z)+2*q.w*q.z*t.y,
+                             -(1-2*q.z*q.z)*t.y-4*q.w*q.z,-t.z),
+                     q:=vvec(q.w,-q.x,-q.y,-q.z))),
+       count(*) FILTER (WHERE constant_t IS DISTINCT FROM
+         struct_pack(t:=vvec(-2*(1-2*q.z*q.z)+6*q.w*q.z,
+                             -3*(1-2*q.z*q.z)-4*q.w*q.z,-4),
+                     q:=vvec(q.w,-q.x,-q.y,-q.z))),
+       count(*) FILTER (WHERE constant_q IS DISTINCT FROM
+         struct_pack(t:=vvec(t.x+4*t.y,t.y-4*t.x,-t.z),q:=vvec(2,0,0,-1))),
+       count(invalid)
+FROM results;
+----
+0	0	0	0
+
+endloop
+
+query III
+WITH results AS MATERIALIZED (
+  SELECT *, se3_compose(t,vvec(2,0,0,1)) AS tq,
+         se3_compose(a,vvec(2,0,0,1)) AS aq,
+         se3_compose(t,se3_make(vvec(2,3,4),vvec(2,0,0,1))) AS tb
+  FROM compose_inputs
+)
+SELECT count(*) FILTER (WHERE tq IS DISTINCT FROM
+         se3_make(vvec(-t.x+4*t.y,-t.y-4*t.x,t.z),vvec(2,0,0,1))),
+       count(*) FILTER (WHERE aq IS DISTINCT FROM
+         se3_make(vvec(-t.x+4*t.y,-t.y-4*t.x,t.z),vvec(-3,11,7,16))),
+       count(*) FILTER (WHERE tb IS DISTINCT FROM
+         se3_make(vvec(2-t.x+4*t.y,3-t.y-4*t.x,4+t.z),vvec(2,0,0,1)))
+FROM results;
+----
+0	0	0
+
+statement ok
+RESET disabled_optimizers;
+
+# Flat inputs must still use the overflow fallback in the rotation kernel.
+statement ok
+CREATE TABLE compose_extremes AS
+SELECT vvec(m,0,0) AS t, vvec('-0.0'::DOUBLE,0,0,1) AS q,
+       se3_make(t,vvec(1,0,0,0)) AS a, se3_make(vvec(0,0,0),q) AS b
+FROM (VALUES (1e308), (1.7e308), (-1e308)) r(m);
+
+query IIIIIII
+WITH results AS MATERIALIZED (
+  SELECT *, se3_compose(t,q) AS tq, se3_compose(a,q) AS aq, se3_compose(t,b) AS tb
+  FROM compose_extremes
+)
+SELECT count(*) FILTER (WHERE (abs(tq.t.x/t.x+1) < 1e-14 AND tq.t.y=0 AND tq.t.z=0) IS NOT TRUE),
+       count(*) FILTER (WHERE (abs(aq.t.x/t.x+1) < 1e-14 AND aq.t.y=0 AND aq.t.z=0) IS NOT TRUE),
+       count(*) FILTER (WHERE (abs(tb.t.x/t.x+1) < 1e-14 AND tb.t.y=0 AND tb.t.z=0) IS NOT TRUE),
+       count(*) FILTER (WHERE (1.0/tq.q.w = '-inf'::DOUBLE) IS NOT TRUE),
+       count(*) FILTER (WHERE (1.0/tb.q.w = '-inf'::DOUBLE) IS NOT TRUE),
+       count(*) FILTER (WHERE (aq.q = vvec(0,0,0,1)) IS NOT TRUE), count(*)
+FROM results;
+----
+0	0	0	0	0	0	3
+
+query III
+WITH results AS MATERIALIZED (
+  SELECT *, se3_inv(struct_pack(t:=t,q:=q)) AS flat,
+         se3_inv(struct_pack(t:=t,q:=vvec('-0.0'::DOUBLE,0,0,1))) AS constant_q
+  FROM compose_extremes
+)
+SELECT count(*) FILTER (WHERE (abs(flat.t.x/t.x-1) < 1e-14 AND flat.t.y=0 AND flat.t.z=0) IS NOT TRUE),
+       count(*) FILTER (WHERE (abs(constant_q.t.x/t.x-1) < 1e-14 AND constant_q.t.y=0 AND constant_q.t.z=0) IS NOT TRUE),
+       count(*) FILTER (WHERE (1.0/constant_q.q.w = '-inf'::DOUBLE) IS NOT TRUE)
+FROM results;
+----
+0	0	0
+
+query I
+WITH results AS MATERIALIZED (
+  SELECT *, se3_apply(struct_pack(t:=t,q:=q),vvec(0,0,0)) AS p
+  FROM compose_extremes
+)
+SELECT count(*) FILTER (WHERE (abs(p.x/t.x+1)<1e-14 AND p.y=0 AND p.z=0) IS NOT TRUE)
+FROM results;
+----
+0

@@ -1,0 +1,156 @@
+# name: test/sql/strict_nulls.test
+# description: Shared input validity, nested output validity and input preservation
+# group: [sql]
+
+require se3
+
+statement ok
+SET disabled_optimizers = 'expression_rewriter';
+
+# Valid, all-invalid, mixed and valid chunks, including a partial final chunk.
+# Later rows have independent NULLs at every input level. Stored snapshots detect input mutation.
+statement ok
+CREATE TABLE strict_inputs AS
+WITH rows AS (
+  SELECT i, CASE WHEN i >= 8197 THEN 101 WHEN i < 2048 OR i >= 6144 THEN 100
+                 WHEN i < 4096 THEN 0 ELSE i % 16 END AS c
+  FROM range(16389) r(i)
+), components AS (
+  SELECT *,
+    CASE WHEN (c = 0 OR (c=101 AND hash(i,1)%17=0)) THEN NULL ELSE struct_pack(
+      x:=CASE WHEN (c=2 OR (c=101 AND hash(i,2)%17=0)) THEN NULL ELSE 2.0 END,
+      y:=CASE WHEN (c=3 OR (c=101 AND hash(i,3)%17=0)) THEN NULL ELSE 3.0 END,
+      z:=CASE WHEN (c=4 OR (c=101 AND hash(i,4)%17=0)) THEN NULL ELSE 5.0 END) END AS a3,
+    CASE WHEN (c = 5 OR (c=101 AND hash(i,5)%17=0)) THEN NULL ELSE struct_pack(
+      x:=CASE WHEN (c=7 OR (c=101 AND hash(i,6)%17=0)) THEN NULL ELSE 7.0 END,
+      y:=CASE WHEN (c=8 OR (c=101 AND hash(i,7)%17=0)) THEN NULL ELSE 11.0 END,
+      z:=CASE WHEN (c=9 OR (c=101 AND hash(i,8)%17=0)) THEN NULL ELSE 13.0 END) END AS b3,
+    CASE WHEN (c = 0 OR (c=101 AND hash(i,9)%17=0)) THEN NULL ELSE struct_pack(
+      w:=CASE WHEN (c=1 OR (c=101 AND hash(i,10)%17=0)) THEN NULL ELSE 2.0 END,
+      x:=CASE WHEN (c=2 OR (c=101 AND hash(i,11)%17=0)) THEN NULL ELSE 3.0 END,
+      y:=CASE WHEN (c=3 OR (c=101 AND hash(i,12)%17=0)) THEN NULL ELSE 5.0 END,
+      z:=CASE WHEN (c=4 OR (c=101 AND hash(i,13)%17=0)) THEN NULL ELSE 7.0 END) END AS a4,
+    CASE WHEN (c = 5 OR (c=101 AND hash(i,14)%17=0)) THEN NULL ELSE struct_pack(
+      w:=CASE WHEN (c=6 OR (c=101 AND hash(i,15)%17=0)) THEN NULL ELSE 11.0 END,
+      x:=CASE WHEN (c=7 OR (c=101 AND hash(i,16)%17=0)) THEN NULL ELSE 13.0 END,
+      y:=CASE WHEN (c=8 OR (c=101 AND hash(i,17)%17=0)) THEN NULL ELSE 17.0 END,
+      z:=CASE WHEN (c=9 OR (c=101 AND hash(i,18)%17=0)) THEN NULL ELSE 19.0 END) END AS b4,
+    CASE WHEN (c IN (0,1) OR (c=101 AND hash(i,19)%17=0)) THEN NULL ELSE 2.0 END AS x,
+    CASE WHEN (c=2 OR (c=101 AND hash(i,20)%17=0)) THEN NULL ELSE 3.0 END AS y,
+    CASE WHEN (c=3 OR (c=101 AND hash(i,21)%17=0)) THEN NULL ELSE 5.0 END AS z,
+    CASE WHEN (c=4 OR (c=101 AND hash(i,22)%17=0)) THEN NULL ELSE 7.0 END AS s
+  FROM rows
+), transforms AS (
+  SELECT *, CASE WHEN (c=10 OR (c=101 AND hash(i,23)%17=0)) THEN NULL ELSE struct_pack(
+    t:=CASE WHEN (c=11 OR (c=101 AND hash(i,24)%17=0)) THEN NULL ELSE a3 END,
+    q:=CASE WHEN (c=12 OR (c=101 AND hash(i,25)%17=0)) THEN NULL ELSE a4 END) END AS wa,
+    CASE WHEN (c=13 OR (c=101 AND hash(i,26)%17=0)) THEN NULL ELSE struct_pack(
+    t:=CASE WHEN (c=14 OR (c=101 AND hash(i,27)%17=0)) THEN NULL ELSE b3 END,
+    q:=CASE WHEN (c=15 OR (c=101 AND hash(i,28)%17=0)) THEN NULL ELSE b4 END) END AS wb
+  FROM components
+)
+SELECT *, CAST(a3 AS VARCHAR) ja3, CAST(b3 AS VARCHAR) jb3, CAST(a4 AS VARCHAR) ja4, CAST(b4 AS VARCHAR) jb4,
+       CAST(wa AS VARCHAR) jwa, CAST(wb AS VARCHAR) jwb, CAST(x AS VARCHAR) jx, CAST(y AS VARCHAR) jy, CAST(z AS VARCHAR) jz, CAST(s AS VARCHAR) js
+FROM transforms;
+
+statement ok
+CREATE MACRO null3(v) AS (v IS NULL OR v.x IS NULL OR v.y IS NULL OR v.z IS NULL);
+
+statement ok
+CREATE MACRO null4(v) AS (v IS NULL OR v.w IS NULL OR v.x IS NULL OR v.y IS NULL OR v.z IS NULL);
+
+statement ok
+CREATE MACRO nullw(v) AS (v IS NULL OR null3(v.t) OR null4(v.q));
+
+statement ok
+CREATE MACRO stricts(v, invalid) AS
+  CASE WHEN invalid THEN v IS NULL ELSE NOT (v IS NULL) END;
+
+statement ok
+CREATE MACRO strict3(v, invalid) AS
+  CASE WHEN invalid THEN v IS NULL AND v.x IS NULL AND v.y IS NULL AND v.z IS NULL ELSE NOT (null3(v)) END;
+
+statement ok
+CREATE MACRO strict4(v, invalid) AS
+  CASE WHEN invalid THEN v IS NULL AND v.w IS NULL AND v.x IS NULL AND v.y IS NULL AND v.z IS NULL ELSE NOT (null4(v)) END;
+
+statement ok
+CREATE MACRO strictw(v, invalid) AS
+  CASE WHEN invalid THEN v IS NULL AND v.t IS NULL AND v.q IS NULL AND v.t.x IS NULL AND v.t.y IS NULL AND v.t.z IS NULL AND v.q.w IS NULL AND v.q.x IS NULL AND v.q.y IS NULL AND v.q.z IS NULL ELSE NOT (nullw(v)) END;
+
+statement ok
+CREATE MACRO nullscalar(v) AS v IS NULL;
+
+foreach mode flat selected
+
+foreach expression strict3(vadd(a3,b3),(null3(a3))OR(null3(b3))) strict4(vadd(a4,b4),(null4(a4))OR(null4(b4))) strict3(vsub(a3,b3),(null3(a3))OR(null3(b3))) strict4(vsub(a4,b4),(null4(a4))OR(null4(b4))) stricts(vdot(a3,b3),(null3(a3))OR(null3(b3))) stricts(vdot(a4,b4),(null4(a4))OR(null4(b4))) stricts(vcos_angle(a3,b3),(null3(a3))OR(null3(b3))) stricts(vcos_angle(a4,b4),(null4(a4))OR(null4(b4))) stricts(vsin_angle(a3,b3),(null3(a3))OR(null3(b3))) stricts(vsin_angle(a4,b4),(null4(a4))OR(null4(b4))) stricts(vtan_angle(a3,b3),(null3(a3))OR(null3(b3))) stricts(vtan_angle(a4,b4),(null4(a4))OR(null4(b4))) stricts(vcot_angle(a3,b3),(null3(a3))OR(null3(b3))) stricts(vcot_angle(a4,b4),(null4(a4))OR(null4(b4))) stricts(vangle(a3,b3),(null3(a3))OR(null3(b3))) stricts(vangle(a4,b4),(null4(a4))OR(null4(b4))) strict3(vproj(a3,b3),(null3(a3))OR(null3(b3))) strict4(vproj(a4,b4),(null4(a4))OR(null4(b4))) strict3(vrej(a3,b3),(null3(a3))OR(null3(b3))) strict4(vrej(a4,b4),(null4(a4))OR(null4(b4))) strict3(vcross(a3,b3),(null3(a3))OR(null3(b3))) strict3(vscale(a3,s),(null3(a3))OR(nullscalar(s))) stricts(vnorm(a3),(null3(a3))) stricts(vnorm2(a3),(null3(a3))) strict3(vnormalize(a3),(null3(a3))) strict4(vscale(a4,s),(null4(a4))OR(nullscalar(s))) stricts(vnorm(a4),(null4(a4))) stricts(vnorm2(a4),(null4(a4))) strict4(vnormalize(a4),(null4(a4))) strict3(vvec(x,y,z),(nullscalar(x))OR(nullscalar(y))OR(nullscalar(z))) strict4(vvec(x,y,z,s),(nullscalar(x))OR(nullscalar(y))OR(nullscalar(z))OR(nullscalar(s))) strict4(qmul(a4,b4),(null4(a4))OR(null4(b4))) strict4(qconj(a4),(null4(a4))) stricts(qnorm2(a4),(null4(a4))) strictw(se3_make(a3,a4),(null3(a3))OR(null4(a4))) strict4(quat_from_axis_angle(a3,s),(null3(a3))OR(nullscalar(s))) strictw(se3_from_axis_angle(a3,b3,s),(null3(a3))OR(null3(b3))OR(nullscalar(s))) strict3(se3_inv(a3),(null3(a3))) strict3(se3_apply(a3,b3),(null3(a3))OR(null3(b3))) strict3(se3_compose(a3,b3),(null3(a3))OR(null3(b3))) strictw(se3_compose(a3,b4),(null3(a3))OR(null4(b4))) strictw(se3_compose(a3,wb),(null3(a3))OR(nullw(wb))) strict4(se3_inv(a4),(null4(a4))) strict3(se3_apply(a4,b3),(null4(a4))OR(null3(b3))) strictw(se3_compose(a4,b3),(null4(a4))OR(null3(b3))) strict4(se3_compose(a4,b4),(null4(a4))OR(null4(b4))) strictw(se3_compose(a4,wb),(null4(a4))OR(nullw(wb))) strictw(se3_inv(wa),(nullw(wa))) strict3(se3_apply(wa,b3),(nullw(wa))OR(null3(b3))) strictw(se3_compose(wa,b3),(nullw(wa))OR(null3(b3))) strictw(se3_compose(wa,b4),(nullw(wa))OR(null4(b4))) strictw(se3_compose(wa,wb),(nullw(wa))OR(nullw(wb)))
+
+query III
+WITH results AS MATERIALIZED (
+  SELECT *, {expression} AS correct
+  FROM strict_inputs WHERE '{mode}'='flat' OR i%3<>1
+)
+SELECT count(*) FILTER (WHERE correct IS NOT TRUE),
+  count(*) FILTER (WHERE CAST(a3 AS VARCHAR) IS DISTINCT FROM ja3 OR CAST(b3 AS VARCHAR) IS DISTINCT FROM jb3
+    OR CAST(a4 AS VARCHAR) IS DISTINCT FROM ja4 OR CAST(b4 AS VARCHAR) IS DISTINCT FROM jb4
+    OR CAST(wa AS VARCHAR) IS DISTINCT FROM jwa OR CAST(wb AS VARCHAR) IS DISTINCT FROM jwb
+    OR CAST(x AS VARCHAR) IS DISTINCT FROM jx OR CAST(y AS VARCHAR) IS DISTINCT FROM jy
+    OR CAST(z AS VARCHAR) IS DISTINCT FROM jz OR CAST(s AS VARCHAR) IS DISTINCT FROM js),
+  count(*) = CASE WHEN '{mode}'='flat' THEN 16389 ELSE 10926 END
+FROM results;
+----
+0	0	true
+
+endloop
+
+endloop
+
+# Constant NULL fields and constant arguments share the same strict semantics.
+foreach expression strict3(vvec(NULL,y,z),true) strict4(vvec(x,y,z,NULL),true) strict3(vscale(a3,NULL),true) strict4(qmul(a4,struct_pack(w:=1.0,x:=NULL,y:=0.0,z:=0.0)),true) strictw(se3_make(a3,struct_pack(w:=1.0,x:=0.0,y:=NULL,z:=0.0)),true) strictw(se3_compose(a3,struct_pack(t:=vvec(1,2,3),q:=struct_pack(w:=NULL::DOUBLE,x:=NULL::DOUBLE,y:=NULL::DOUBLE,z:=NULL::DOUBLE))),true)
+
+query I
+SELECT count(*) FILTER (WHERE {expression} IS NOT TRUE) FROM strict_inputs;
+----
+0
+
+endloop
+
+foreach expression strict3(vadd(a3,vvec(1,2,3)),null3(a3)) strict3(se3_apply(vvec(1,0,0,0),a3),null3(a3)) strictw(se3_compose(a3,vvec(1,0,0,0)),null3(a3)) strictw(se3_compose(vvec(1,2,3),wb),nullw(wb)) strictw(se3_compose(wa,vvec(1,0,0,0)),nullw(wa)) strict4(quat_from_axis_angle(vvec(1,0,0),s),nullscalar(s))
+
+query I
+SELECT count(*) FILTER (WHERE {expression} IS NOT TRUE) FROM strict_inputs;
+----
+0
+
+endloop
+
+# A domain error must not change a mask shared with a nullable scalar input.
+statement ok
+CREATE TABLE domain_inputs AS
+SELECT i, CASE WHEN i%3=0 THEN NULL ELSE 0.75 END AS angle,
+       vvec(CASE WHEN i%3=1 THEN 0 ELSE 2 END,0,0) AS axis,
+       struct_pack(x:=CASE WHEN i%7=0 THEN NULL ELSE 1.0 END,y:=2.0,z:=3.0) AS t
+FROM range(8197) r(i);
+
+foreach angle angle 0.75
+
+query IIIIII
+WITH results AS MATERIALIZED (
+  SELECT *, quat_from_axis_angle(axis,{angle}) AS q,
+         se3_from_axis_angle(t,axis,{angle}) AS w
+  FROM domain_inputs
+)
+SELECT count(*) FILTER (WHERE (q IS NULL) IS DISTINCT FROM (i%3=1 OR {angle} IS NULL)),
+       count(*) FILTER (WHERE (w IS NULL) IS DISTINCT FROM (i%3=1 OR {angle} IS NULL OR i%7=0)),
+       count(*) FILTER (WHERE q IS NULL AND (q.w IS NOT NULL OR q.z IS NOT NULL)),
+       count(*) FILTER (WHERE w IS NULL AND (w.t.x IS NOT NULL OR w.q.w IS NOT NULL)),
+       count(*) FILTER (WHERE (angle IS NULL) IS DISTINCT FROM (i%3=0)),
+       count(*) FILTER (WHERE (t.x IS NULL) IS DISTINCT FROM (i%7=0))
+FROM results;
+----
+0	0	0	0	0	0
+
+endloop
+
+statement ok
+RESET disabled_optimizers;

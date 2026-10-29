@@ -722,7 +722,7 @@ WITH r AS (
   SELECT (random()*2.0-1.0) * pi() AS th
   FROM range(200)
 )
-SELECT bool_and(abs(qnorm2(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th)) - 1.0) < 1e-12)
+SELECT bool_and((abs(qnorm2(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th)) - 1.0) < 1e-12) IS TRUE)
 FROM r;
 ----
 true
@@ -739,7 +739,7 @@ WITH r AS (
     (random()*2.0-1.0) AS tz
   FROM range(200)
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
         se3_compose(struct_pack(x:=tx, y:=ty, z:=tz), se3_identity()),
         struct_pack(x:=px, y:=py, z:=pz)
@@ -752,7 +752,7 @@ SELECT bool_and(
         se3_compose(struct_pack(x:=tx, y:=ty, z:=tz), se3_identity()),
         struct_pack(x:=px, y:=py, z:=pz)
       )).z - (pz + tz)) < 1e-12
-)
+) IS TRUE)
 FROM r;
 ----
 true
@@ -767,7 +767,7 @@ WITH r AS (
     (random()*2.0-1.0) * pi() AS th
   FROM range(200)
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
         se3_compose(quat_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=1.0), th), se3_identity()),
         struct_pack(x:=px, y:=py, z:=pz)
@@ -789,7 +789,7 @@ SELECT bool_and(
         se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=0.0, y:=0.0, z:=1.0), th),
         struct_pack(x:=px, y:=py, z:=pz)
       )).z) < 1e-12
-)
+) IS TRUE)
 FROM r;
 ----
 true
@@ -823,7 +823,7 @@ WITH r AS (
   FROM n
   WHERE an > 1e-9
 )
-SELECT bool_and(
+SELECT bool_and((
   abs(
     (se3_apply(
       se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th),
@@ -848,7 +848,7 @@ SELECT bool_and(
     )).z
   - (px*px + py*py + pz*pz)
   ) < 1e-10
-)
+) IS TRUE)
 FROM u;
 ----
 true
@@ -912,7 +912,7 @@ WITH r AS (
     px, py, pz
   FROM u
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
         se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qv),
         se3_apply(
@@ -934,7 +934,7 @@ SELECT bool_and(
           struct_pack(x:=px, y:=py, z:=pz)
         )
       )).z - pz) < 1e-10
-)
+) IS TRUE)
 FROM q;
 ----
 true
@@ -967,7 +967,7 @@ WITH r AS (
   FROM n
   WHERE an > 1e-9
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
     se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()),
     struct_pack(x:=px, y:=py, z:=pz)
@@ -980,7 +980,7 @@ SELECT bool_and(
     se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), 2.0*pi()),
     struct_pack(x:=px, y:=py, z:=pz)
   )).z - pz) < 1e-10
-)
+) IS TRUE)
 FROM u;
 ----
 true
@@ -1019,7 +1019,7 @@ WITH r AS (
     1.0 + 2.0*pi() AS th2
   FROM u
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
     se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th1),
     struct_pack(x:=px, y:=py, z:=pz)
@@ -1041,7 +1041,7 @@ SELECT bool_and(
     se3_from_axis_angle(struct_pack(x:=0.0, y:=0.0, z:=0.0), struct_pack(x:=ux, y:=uy, z:=uz), th2),
     struct_pack(x:=px, y:=py, z:=pz)
   )).z) < 1e-10
-)
+) IS TRUE)
 FROM a;
 ----
 true
@@ -1080,7 +1080,7 @@ WITH r AS (
     px, py, pz
   FROM u
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
         se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), q2),
         se3_apply(
@@ -1102,7 +1102,7 @@ SELECT bool_and(
           struct_pack(x:=px, y:=py, z:=pz)
         )
       )).z - pz) < 1e-10
-)
+) IS TRUE)
 FROM q;
 ----
 true
@@ -1141,7 +1141,7 @@ WITH r AS (
     px, py, pz
   FROM u
 )
-SELECT bool_and(
+SELECT bool_and((
   abs((se3_apply(
         se3_make(struct_pack(x:=0.0, y:=0.0, z:=0.0), qmul(q2, q1)),
         struct_pack(x:=px, y:=py, z:=pz)
@@ -1172,7 +1172,7 @@ SELECT bool_and(
           struct_pack(x:=px, y:=py, z:=pz)
         )
       )).z) < 1e-10
-)
+) IS TRUE)
 FROM q;
 ----
 true
@@ -2059,13 +2059,13 @@ DROP TABLE projection_ranges;
 query IIII
 WITH inputs(a) AS (VALUES (1.4e308), (1.7e308), (-1.7e308))
 SELECT
-  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a), vvec(1, 0.5, 0.5)), 1/a),
-    vvec(-1.0/3, 1.0/3, 1.0/3))) < 1e-12),
-  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a, 0), vvec(1, 0.5, 0.5, 0)), 1/a),
-    vvec(-1.0/3, 1.0/3, 1.0/3, 0))) < 1e-12),
-  bool_and(vnorm(vsub(vscale(vrej(vvec(a, a, a, a), vvec(1, 0.5, 0.5, 0.5)), 1/a),
-    vvec(-3.0/7, 2.0/7, 2.0/7, 2.0/7))) < 1e-12),
-  bool_and(isinf((vproj(vvec(a, a, a), vvec(1, 0.5, 0.5))).x))
+  bool_and((vnorm(vsub(vscale(vrej(vvec(a, a, a), vvec(1, 0.5, 0.5)), 1/a),
+    vvec(-1.0/3, 1.0/3, 1.0/3))) < 1e-12) IS TRUE),
+  bool_and((vnorm(vsub(vscale(vrej(vvec(a, a, a, 0), vvec(1, 0.5, 0.5, 0)), 1/a),
+    vvec(-1.0/3, 1.0/3, 1.0/3, 0))) < 1e-12) IS TRUE),
+  bool_and((vnorm(vsub(vscale(vrej(vvec(a, a, a, a), vvec(1, 0.5, 0.5, 0.5)), 1/a),
+    vvec(-3.0/7, 2.0/7, 2.0/7, 2.0/7))) < 1e-12) IS TRUE),
+  bool_and((isinf((vproj(vvec(a, a, a), vvec(1, 0.5, 0.5))).x)) IS TRUE)
 FROM inputs;
 ----
 true	true	true	true
@@ -2073,10 +2073,10 @@ true	true	true	true
 query IIII
 WITH inputs(b) AS (VALUES (1e200), (1e-200), (1e-320))
 SELECT
-  bool_and(vproj(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)),
-  bool_and(vrej(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)),
-  bool_and(vproj(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0)),
-  bool_and(vrej(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0))
+  bool_and((vproj(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)) IS TRUE),
+  bool_and((vrej(vvec(0, 0, 0), vvec(b, b, b)) = vvec(0, 0, 0)) IS TRUE),
+  bool_and((vproj(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0)) IS TRUE),
+  bool_and((vrej(vvec(0, 0, 0, 0), vvec(b, b, b, b)) = vvec(0, 0, 0, 0)) IS TRUE)
 FROM inputs;
 ----
 true	true	true	true

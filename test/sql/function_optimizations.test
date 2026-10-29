@@ -233,3 +233,27 @@ true	true	true	true	true	true
 
 statement ok
 RESET disabled_optimizers;
+
+# Flat axis-angle inputs with zero axes must invalidate the whole output struct.
+statement ok
+CREATE TABLE flat_axis_angles AS
+SELECT i, CASE i%5 WHEN 0 THEN 0.0 WHEN 1 THEN 1.0 WHEN 2 THEN 1e300
+                  WHEN 3 THEN 1e-300 ELSE 1e-320 END * CASE WHEN i%2=0 THEN 1 ELSE -1 END AS scale,
+       vvec(0,0,scale) AS axis, (i%17-8)*0.125 AS angle, vvec(i,2,-3) AS t
+FROM range(8197) r(i);
+
+query IIIIII
+WITH results AS MATERIALIZED (
+  SELECT *, quat_from_axis_angle(axis,angle) AS q, se3_from_axis_angle(t,axis,angle) AS w
+  FROM flat_axis_angles
+)
+SELECT count(*) FILTER (WHERE (q IS NULL) IS DISTINCT FROM (scale=0)),
+       count(*) FILTER (WHERE (w IS NULL) IS DISTINCT FROM (scale=0)),
+       count(*) FILTER (WHERE scale=0 AND (q.w IS NOT NULL OR q.x IS NOT NULL OR q.y IS NOT NULL OR q.z IS NOT NULL
+         OR w.t IS NOT NULL OR w.q IS NOT NULL OR w.t.x IS NOT NULL OR w.q.w IS NOT NULL)),
+       count(*) FILTER (WHERE scale<>0 AND (abs(q.w-cos(angle/2))<1e-14 AND q.x=0 AND q.y=0
+         AND abs(q.z-sin(angle/2)*sign(scale))<1e-14 AND w.t=t AND w.q=q) IS NOT TRUE),
+       count(*) FILTER (WHERE axis.z IS DISTINCT FROM scale OR t IS NULL), count(*)
+FROM results;
+----
+0	0	0	0	0	8197
